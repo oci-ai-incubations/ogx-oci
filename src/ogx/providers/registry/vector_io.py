@@ -912,9 +912,6 @@ vector_io:
     conn_str: "${env.OCI26AI_CONNECTION_STRING}"
     user: "${env.OCI26AI_USER}"
     password: "${env.OCI26AI_PASSWORD}"
-    tnsnames_loc: "${env.OCI26AI_TNSNAMES_LOC}"
-    ewallet_pem_loc: "${env.OCI26AI_EWALLET_PEM_LOC}"
-    ewallet_password: "${env.OCI26AI_EWALLET_PWD}"
     vector_datatype: "${env.OCI26AI_VECTOR_DATATYPE:=FLOAT32}"
     persistence:
       namespace: vector_id::oci26ai
