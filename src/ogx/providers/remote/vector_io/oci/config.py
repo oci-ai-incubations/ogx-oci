@@ -22,6 +22,11 @@ class OCI26aiVectorIOConfig(BaseModel):
     persistence: KVStoreReference = Field(description="Config for KV store backend")
     consistency_level: str = Field(description="The consistency level of the OCI26ai server", default="Strong")
     vector_datatype: str = Field(description="Vector datatype for embeddings", default="FLOAT32")
+    pool_min: int = Field(default=1, description="Minimum number of connections in the Oracle pool")
+    pool_max: int = Field(default=10, description="Maximum number of connections in the Oracle pool")
+    pool_ping_interval: int = Field(
+        default=60, description="Seconds between connection health checks (oracledb pool ping_interval)"
+    )
 
     @classmethod
     def sample_run_config(cls, __distro_dir__: str, **kwargs: Any) -> dict[str, Any]:
