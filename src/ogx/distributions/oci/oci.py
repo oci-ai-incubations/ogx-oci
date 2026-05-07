@@ -44,6 +44,7 @@ def get_distribution_template(name: str = "oci") -> DistributionTemplate:
             BuildProvider(provider_type="inline::localfs"),
             BuildProvider(provider_type="remote::s3"),
         ],
+        "file_processors": [BuildProvider(provider_type="inline::auto")],
     }
 
     inference_provider = Provider(

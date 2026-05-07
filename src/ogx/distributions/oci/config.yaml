@@ -1,6 +1,7 @@
 version: 2
 distro_name: oci
 apis:
+- file_processors
 - files
 - inference
 - responses
@@ -87,6 +88,9 @@ providers:
       metadata_store:
         table_name: s3_files_metadata
         backend: sql_default
+  file_processors:
+  - provider_id: auto
+    provider_type: inline::auto
 storage:
   backends:
     kv_default:
