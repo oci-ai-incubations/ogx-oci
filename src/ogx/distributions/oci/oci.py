@@ -12,6 +12,7 @@ from ogx.providers.inline.files.localfs.config import LocalfsFilesImplConfig
 from ogx.providers.inline.vector_io.faiss.config import FaissVectorIOConfig
 from ogx.providers.remote.files.s3.config import S3FilesImplConfig
 from ogx.providers.remote.inference.oci.config import OCIConfig
+from ogx.providers.remote.vector_io.oci.config import OCI26aiVectorIOConfig
 
 
 def get_distribution_template(name: str = "oci") -> DistributionTemplate:
@@ -29,6 +30,7 @@ def get_distribution_template(name: str = "oci") -> DistributionTemplate:
             BuildProvider(provider_type="inline::faiss"),
             BuildProvider(provider_type="remote::chromadb"),
             BuildProvider(provider_type="remote::pgvector"),
+            BuildProvider(provider_type="remote::oci"),
         ],
         "safety": [BuildProvider(provider_type="inline::llama-guard")],
         "responses": [BuildProvider(provider_type="inline::builtin")],
@@ -56,6 +58,12 @@ def get_distribution_template(name: str = "oci") -> DistributionTemplate:
         config=FaissVectorIOConfig.sample_run_config(f"~/.ogx/distributions/{name}"),
     )
 
+    oci_vector_io_provider = Provider(
+        provider_id="oci",
+        provider_type="remote::oci",
+        config=OCI26aiVectorIOConfig.sample_run_config(f"~/.ogx/distributions/{name}"),
+    )
+
     files_provider = Provider(
         provider_id="builtin-files",
         provider_type="inline::localfs",
@@ -78,7 +86,7 @@ def get_distribution_template(name: str = "oci") -> DistributionTemplate:
             "config.yaml": RunConfigSettings(
                 provider_overrides={
                     "inference": [inference_provider],
-                    "vector_io": [vector_io_provider],
+                    "vector_io": [vector_io_provider, oci_vector_io_provider],
                     "files": [files_provider, s3_files_provider],
                 },
             ),

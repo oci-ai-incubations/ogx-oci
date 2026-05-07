@@ -24,6 +24,16 @@ providers:
       persistence:
         namespace: vector_io::faiss
         backend: kv_default
+  - provider_id: oci
+    provider_type: remote::oci
+    config:
+      conn_str: ${env.OCI26AI_CONNECTION_STRING}
+      user: ${env.OCI26AI_USER}
+      password: ${env.OCI26AI_PASSWORD}
+      vector_datatype: ${env.OCI26AI_VECTOR_DATATYPE:=FLOAT32}
+      persistence:
+        namespace: vector_io::oci26ai
+        backend: kv_default
   safety:
   - provider_id: llama-guard
     provider_type: inline::llama-guard

@@ -13,7 +13,7 @@ The `ogx/distribution-oci` distribution consists of the following provider confi
 | responses | `inline::builtin` |
 | safety | `inline::llama-guard` |
 | tool_runtime | `remote::brave-search`, `remote::tavily-search`, `inline::file-search`, `remote::model-context-protocol` |
-| vector_io | `inline::faiss`, `remote::chromadb`, `remote::pgvector` |
+| vector_io | `inline::faiss`, `remote::chromadb`, `remote::pgvector`, `remote::oci` |
 
 ## Environment Variables
 
