@@ -8,13 +8,14 @@ The `ogx/distribution-oci` distribution consists of the following provider confi
 
 | API | Provider(s) |
 |-----|-------------|
-| file_processors | `inline::auto` |
+| batches | `inline::reference` |
+| file_processors | `inline::auto`, `inline::docling` |
 | files | `inline::localfs`, `remote::s3` |
 | inference | `remote::oci` |
 | responses | `inline::builtin` |
-| safety | `inline::llama-guard` |
+| safety | `inline::llama-guard`, `inline::code-scanner`, `inline::prompt-guard` |
 | tool_runtime | `remote::brave-search`, `remote::tavily-search`, `inline::file-search`, `remote::model-context-protocol` |
-| vector_io | `inline::faiss`, `remote::chromadb`, `remote::pgvector`, `remote::oci` |
+| vector_io | `inline::faiss`, `inline::sqlite-vec`, `remote::chromadb`, `remote::pgvector`, `remote::oci` |
 
 ## Environment Variables
 

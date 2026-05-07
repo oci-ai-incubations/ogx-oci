@@ -1,6 +1,7 @@
 version: 2
 distro_name: oci
 apis:
+- batches
 - file_processors
 - files
 - inference
@@ -25,6 +26,13 @@ providers:
       persistence:
         namespace: vector_io::faiss
         backend: kv_default
+  - provider_id: sqlite-vec
+    provider_type: inline::sqlite-vec
+    config:
+      db_path: ${env.SQLITE_STORE_DIR:=~/.ogx/distributions/oci}/sqlite_vec.db
+      persistence:
+        namespace: vector_io::sqlite_vec
+        backend: kv_default
   - provider_id: oci
     provider_type: remote::oci
     config:
@@ -36,10 +44,12 @@ providers:
         namespace: vector_io::oci26ai
         backend: kv_default
   safety:
-  - provider_id: llama-guard
-    provider_type: inline::llama-guard
+  - provider_id: code-scanner
+    provider_type: inline::code-scanner
+  - provider_id: prompt-guard
+    provider_type: inline::prompt-guard
     config:
-      excluded_categories: []
+      guard_type: injection
   responses:
   - provider_id: builtin
     provider_type: inline::builtin
@@ -89,8 +99,18 @@ providers:
         table_name: s3_files_metadata
         backend: sql_default
   file_processors:
-  - provider_id: auto
-    provider_type: inline::auto
+  - provider_id: docling
+    provider_type: inline::docling
+    config:
+      default_chunk_size_tokens: 800
+      default_chunk_overlap_tokens: 400
+  batches:
+  - provider_id: reference
+    provider_type: inline::reference
+    config:
+      kvstore:
+        namespace: batches
+        backend: kv_default
 storage:
   backends:
     kv_default:
