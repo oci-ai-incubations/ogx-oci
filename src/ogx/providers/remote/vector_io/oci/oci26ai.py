@@ -77,13 +77,13 @@ class OCI26aiIndex(EmbeddingIndex):
 
     def __init__(
         self,
-        connection,
+        pool,
         vector_store: VectorStore,
         consistency_level="Strong",
         kvstore: KVStore | None = None,
         vector_datatype: str = "FLOAT32",
     ):
-        self.connection = connection
+        self.pool = pool
         self.vector_store = vector_store
         self.table_name = sanitize_collection_name(vector_store.vector_store_id)
         self.dimensions = vector_store.embedding_dimension
@@ -93,41 +93,37 @@ class OCI26aiIndex(EmbeddingIndex):
 
     async def initialize(self) -> None:
         logger.info("Attempting to create table", table_name=self.table_name)
-        cursor = self.connection.cursor()
-        try:
-            #  Create table
-            create_table_sql = f"""
-                CREATE TABLE IF NOT EXISTS {self.table_name} (
-                    chunk_id VARCHAR2(100) PRIMARY KEY,
-                    content CLOB,
-                    vector VECTOR({self.dimensions}, {self.vector_datatype}),
-                    metadata JSON,
-                    chunk_metadata JSON
-                );
-            """
-            logger.debug("Executing SQL", create_table_sql=create_table_sql)
-            cursor.execute(create_table_sql)
-            logger.info("Table created successfully", table_name=self.table_name)
+        with self.pool.acquire() as conn:
+            conn.autocommit = True
+            with conn.cursor() as cursor:
+                create_table_sql = f"""
+                    CREATE TABLE IF NOT EXISTS {self.table_name} (
+                        chunk_id VARCHAR2(100) PRIMARY KEY,
+                        content CLOB,
+                        vector VECTOR({self.dimensions}, {self.vector_datatype}),
+                        metadata JSON,
+                        chunk_metadata JSON
+                    );
+                """
+                logger.debug("Executing SQL", create_table_sql=create_table_sql)
+                cursor.execute(create_table_sql)
+                logger.info("Table created successfully", table_name=self.table_name)
 
-            await self.create_indexes()
-        finally:
-            cursor.close()
+        await self.create_indexes()
 
     async def index_exists(self, index_name: str) -> bool:
-        cursor = self.connection.cursor()
-        try:
-            cursor.execute(
-                """
-                SELECT COUNT(*)
-                FROM USER_INDEXES
-                WHERE INDEX_NAME = :index_name
-            """,
-                index_name=index_name.upper(),
-            )
-            (count,) = cursor.fetchone()
-            return bool(count > 0)
-        finally:
-            cursor.close()
+        with self.pool.acquire() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM USER_INDEXES
+                    WHERE INDEX_NAME = :index_name
+                """,
+                    index_name=index_name.upper(),
+                )
+                (count,) = cursor.fetchone()
+                return bool(count > 0)
 
     async def create_indexes(self):
         indexes = [
@@ -155,12 +151,11 @@ class OCI26aiIndex(EmbeddingIndex):
         for idx in indexes:
             if not await self.index_exists(idx["name"]):
                 logger.info("Creating index", name=idx["name"])
-                cursor = self.connection.cursor()
-                try:
-                    cursor.execute(idx["sql"])
-                    logger.info("Index created successfully", name=idx["name"])
-                finally:
-                    cursor.close()
+                with self.pool.acquire() as conn:
+                    conn.autocommit = True
+                    with conn.cursor() as cursor:
+                        cursor.execute(idx["sql"])
+                        logger.info("Index created successfully", name=idx["name"])
             else:
                 logger.info("Index already exists, skipping", name=idx["name"])
 
@@ -178,43 +173,40 @@ class OCI26aiIndex(EmbeddingIndex):
                     "chunk_metadata": json.dumps(chunk_step.get("chunk_metadata")),
                 }
             )
-        cursor = self.connection.cursor()
+        query = f"""
+            MERGE INTO {self.table_name} t
+            USING (
+                SELECT
+                    :chunk_id       AS chunk_id,
+                    :content        AS content,
+                    :vector         AS vector,
+                    :metadata       AS metadata,
+                    :chunk_metadata AS chunk_metadata
+                FROM dual
+            ) s
+            ON (t.chunk_id = s.chunk_id)
+
+            WHEN MATCHED THEN
+            UPDATE SET
+                t.content           = s.content,
+                t.vector            = TO_VECTOR(s.vector, {self.dimensions}, {self.vector_datatype}),
+                t.metadata          = s.metadata,
+                t.chunk_metadata    = s.chunk_metadata
+
+            WHEN NOT MATCHED THEN
+            INSERT (chunk_id, content, vector, metadata, chunk_metadata)
+            VALUES (s.chunk_id, s.content, TO_VECTOR(s.vector, {self.dimensions}, {self.vector_datatype}), s.metadata, s.chunk_metadata)
+            """
+        logger.debug("query", query=query)
         try:
-            query = f"""
-                MERGE INTO {self.table_name} t
-                USING (
-                    SELECT
-                        :chunk_id       AS chunk_id,
-                        :content        AS content,
-                        :vector         AS vector,
-                        :metadata       AS metadata,
-                        :chunk_metadata AS chunk_metadata
-                    FROM dual
-                ) s
-                ON (t.chunk_id = s.chunk_id)
-
-                WHEN MATCHED THEN
-                UPDATE SET
-                    t.content           = s.content,
-                    t.vector            = TO_VECTOR(s.vector, {self.dimensions}, {self.vector_datatype}),
-                    t.metadata          = s.metadata,
-                    t.chunk_metadata    = s.chunk_metadata
-
-                WHEN NOT MATCHED THEN
-                INSERT (chunk_id, content, vector, metadata, chunk_metadata)
-                VALUES (s.chunk_id, s.content, TO_VECTOR(s.vector, {self.dimensions}, {self.vector_datatype}), s.metadata, s.chunk_metadata)
-                """
-            logger.debug("query", query=query)
-            cursor.executemany(
-                query,
-                data,
-            )
-            logger.info("Merge completed successfully")
+            with self.pool.acquire() as conn:
+                conn.autocommit = True
+                with conn.cursor() as cursor:
+                    cursor.executemany(query, data)
+                    logger.info("Merge completed successfully")
         except Exception as e:
             logger.error("Error inserting chunks into Oracle 26AI table", table_name=self.table_name, error=str(e))
             raise
-        finally:
-            cursor.close()
 
     async def query_vector(
         self,
@@ -227,8 +219,6 @@ class OCI26aiIndex(EmbeddingIndex):
         Oracle vector search using COSINE similarity.
         Returns top-k chunks and normalized similarity scores in [0, 1].
         """
-        cursor = self.connection.cursor()
-
         # Ensure query vector is L2-normalized
         array_type = "d" if self.vector_datatype == "FLOAT64" else "f"
         query_vector = array(array_type, normalize_embedding(np.array(embedding)))
@@ -262,8 +252,10 @@ class OCI26aiIndex(EmbeddingIndex):
         logger.debug("Executing query", query=query)
         logger.debug("Query vector", vector=str(query_vector))
         try:
-            cursor.execute(query, params)
-            results = cursor.fetchall()
+            with self.pool.acquire() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(query, params)
+                    results = cursor.fetchall()
 
             chunks: list[EmbeddedChunk] = []
             scores: list[float] = []
@@ -290,14 +282,9 @@ class OCI26aiIndex(EmbeddingIndex):
             logger.error("Failed to query vector", error=str(e))
             raise
 
-        finally:
-            cursor.close()
-
     async def query_keyword(
         self, query_string: str, k: int, score_threshold: float, filters: Filter | None = None
     ) -> QueryChunksResponse:
-        cursor = self.connection.cursor()
-
         # Build base query
         base_query = f"""
                 SELECT
@@ -332,8 +319,10 @@ class OCI26aiIndex(EmbeddingIndex):
         logger.debug(query)
 
         try:
-            cursor.execute(query, params)
-            results = cursor.fetchall()
+            with self.pool.acquire() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(query, params)
+                    results = cursor.fetchall()
 
             chunks = []
             scores = []
@@ -355,8 +344,6 @@ class OCI26aiIndex(EmbeddingIndex):
         except Exception as e:
             logger.error("Error performing keyword search", error=str(e))
             raise
-        finally:
-            cursor.close()
 
     async def query_hybrid(
         self,
@@ -424,9 +411,11 @@ class OCI26aiIndex(EmbeddingIndex):
 
     async def delete(self):
         try:
-            with self.connection.cursor() as cursor:
-                cursor.execute(f"DROP TABLE IF EXISTS {self.table_name}")
-            logger.info("Dropped table: {self.table_name}")
+            with self.pool.acquire() as conn:
+                conn.autocommit = True
+                with conn.cursor() as cursor:
+                    cursor.execute(f"DROP TABLE IF EXISTS {self.table_name}")
+            logger.info("Dropped table", table_name=self.table_name)
         except oracledb.DatabaseError as e:
             logger.error("Error dropping table", table_name=self.table_name, error=str(e))
             raise
@@ -437,17 +426,17 @@ class OCI26aiIndex(EmbeddingIndex):
             return
         placeholders = [f":id_{i}" for i in range(len(chunk_ids))]
         params = {f"id_{i}": cid for i, cid in enumerate(chunk_ids)}
-        cursor = self.connection.cursor()
         try:
-            cursor.execute(
-                f"DELETE FROM {self.table_name} WHERE chunk_id IN ({', '.join(placeholders)})",
-                params,
-            )
+            with self.pool.acquire() as conn:
+                conn.autocommit = True
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        f"DELETE FROM {self.table_name} WHERE chunk_id IN ({', '.join(placeholders)})",
+                        params,
+                    )
         except Exception as e:
             logger.error("Error deleting chunks from Oracle 26AI table", table_name=self.table_name, error=str(e))
             raise
-        finally:
-            cursor.close()
 
 
 class OCI26aiVectorIOAdapter(OpenAIVectorStoreMixin, VectorIO, VectorStoresProtocolPrivate):
@@ -475,19 +464,23 @@ class OCI26aiVectorIOAdapter(OpenAIVectorStoreMixin, VectorIO, VectorStoresProto
         await self.initialize_openai_vector_stores()
 
         try:
-            self.connection = oracledb.connect(
+            self.pool = oracledb.create_pool(
                 user=self.config.user,
                 password=self.config.password,
                 dsn=self.config.conn_str,
-                config_dir=self.config.tnsnames_loc,
-                wallet_location=self.config.ewallet_pem_loc,
-                wallet_password=self.config.ewallet_password,
-                expire_time=1,  # minutes
+                min=self.config.pool_min,
+                max=self.config.pool_max,
+                increment=1,
+                ping_interval=self.config.pool_ping_interval,
             )
-            self.connection.autocommit = True
-            logger.info("Oracle connection created successfully")
+            logger.info(
+                "Oracle connection pool created",
+                min=self.config.pool_min,
+                max=self.config.pool_max,
+                ping_interval=self.config.pool_ping_interval,
+            )
         except Exception as e:
-            logger.error("Error creating Oracle connection", error=str(e))
+            logger.error("Error creating Oracle connection pool", error=str(e))
             raise
 
         # Load State
@@ -502,7 +495,7 @@ class OCI26aiVectorIOAdapter(OpenAIVectorStoreMixin, VectorIO, VectorStoresProto
                 vector_store_id=vector_store.vector_store_id,
             )
             oci_index = OCI26aiIndex(
-                connection=self.connection,
+                pool=self.pool,
                 vector_store=vector_store,
                 kvstore=self.kvstore,
                 vector_datatype=self.config.vector_datatype,
@@ -514,9 +507,9 @@ class OCI26aiVectorIOAdapter(OpenAIVectorStoreMixin, VectorIO, VectorStoresProto
         logger.info("Completed loading indexes", stored_vector_stores_count=len(stored_vector_stores))
 
     async def shutdown(self) -> None:
-        logger.info("Shutting down Oracle connection")
-        if self.connection is not None:
-            self.connection.close()
+        logger.info("Shutting down Oracle connection pool")
+        if self.pool is not None:
+            self.pool.close()
         # Clean up mixin resources (file batch tasks)
         await super().shutdown()
 
@@ -533,7 +526,7 @@ class OCI26aiVectorIOAdapter(OpenAIVectorStoreMixin, VectorIO, VectorStoresProto
         else:
             consistency_level = "Strong"
         oci_index = OCI26aiIndex(
-            connection=self.connection,
+            pool=self.pool,
             vector_store=vector_store,
             consistency_level=consistency_level,
             vector_datatype=self.config.vector_datatype,
@@ -563,7 +556,7 @@ class OCI26aiVectorIOAdapter(OpenAIVectorStoreMixin, VectorIO, VectorStoresProto
         index = VectorStoreWithIndex(
             vector_store=vector_store,
             index=OCI26aiIndex(
-                connection=self.connection,
+                pool=self.pool,
                 vector_store=vector_store,
                 kvstore=self.kvstore,
                 vector_datatype=self.config.vector_datatype,

@@ -18,7 +18,15 @@ from ogx.log import get_logger
 from ogx.providers.remote.inference.oci.auth import OciInstancePrincipalAuth, OciUserPrincipalAuth
 from ogx.providers.remote.inference.oci.config import OCIConfig
 from ogx.providers.utils.inference.openai_mixin import OpenAIMixin
-from ogx_api import Model, ModelType
+from ogx_api import (
+    Model,
+    ModelType,
+    OpenAIEmbeddingData,
+    OpenAIEmbeddingsRequestWithExtraBody,
+    OpenAIEmbeddingsResponse,
+    OpenAIEmbeddingUsage,
+    validate_embeddings_input_is_text,
+)
 
 logger = get_logger(name=__name__, category="inference::oci")
 
@@ -162,4 +170,147 @@ class OCIInferenceAdapter(OpenAIMixin):
             provider_resource_id=identifier,
             identifier=identifier,
             model_type=ModelType.llm,
+        )
+
+    async def openai_embeddings(
+        self,
+        params: OpenAIEmbeddingsRequestWithExtraBody,
+    ) -> OpenAIEmbeddingsResponse:
+        """
+        A temporary shim/router for using non-OpenAI compatible endpoints like cohere
+        """
+        if "cohere" in params.model:
+            return await self.cohere_embeddings(params)
+        else:
+            return await self.get_openai_embeddings(params)
+
+    async def get_openai_embeddings(
+        self,
+        params: OpenAIEmbeddingsRequestWithExtraBody,
+    ) -> OpenAIEmbeddingsResponse:
+        """
+        Direct OpenAI embeddings API call.
+        """
+        if not self.supports_tokenized_embeddings_input:
+            validate_embeddings_input_is_text(params)
+
+        provider_model_id = await self._get_provider_model_id(params.model)
+        self._validate_model_allowed(provider_model_id)
+
+        # Build request params conditionally to avoid NotGiven/Omit type mismatch
+        # The OpenAI SDK uses Omit in signatures but NOT_GIVEN has type NotGiven
+        request_params: dict[str, Any] = {
+            "model": provider_model_id,
+            "input": params.input,
+        }
+        if params.encoding_format is not None:
+            request_params["encoding_format"] = params.encoding_format
+        if params.dimensions is not None:
+            request_params["dimensions"] = params.dimensions
+        if params.user is not None:
+            request_params["user"] = params.user
+        if params.model_extra:
+            request_params["extra_body"] = params.model_extra
+
+        response = await self.client.embeddings.create(**request_params)
+
+        data = []
+        for i, embedding_data in enumerate(response.data):
+            data.append(
+                OpenAIEmbeddingData(
+                    embedding=embedding_data.embedding,
+                    index=i,
+                )
+            )
+
+        usage = OpenAIEmbeddingUsage(
+            prompt_tokens=response.usage.prompt_tokens,
+            total_tokens=response.usage.total_tokens,
+        )
+
+        return OpenAIEmbeddingsResponse(
+            data=data,
+            model=params.model,
+            usage=usage,
+        )
+
+    @property
+    def cohere_client(self):
+        """
+        Get an oci GenerativeAiInferenceClient instance.
+        """
+        oci_config = self._get_oci_config()
+        oci_signer = self._get_oci_signer()
+        if oci_signer is None:
+            return oci.generative_ai_inference.GenerativeAiInferenceClient(
+                config=oci_config, retry_strategy=oci.retry.NoneRetryStrategy(), timeout=(10, 240)
+            )
+        else:
+            return oci.generative_ai_inference.GenerativeAiInferenceClient(
+                config=oci_config, signer=oci_signer, retry_strategy=oci.retry.NoneRetryStrategy(), timeout=(10, 240)
+            )
+
+    def _validate_cohere_dimensions(self, dimensions: int, provider_model_id: str) -> None:
+        """
+        Validate dimensions for cohere are in [256 512 1024 1536]
+
+        :param dimensions: Embedding dimensions passed in the request
+        :param provider_model_id: Model provided in the request
+        :raises ValueError: If the dimensions are not in [256 512 1024 1536]
+        """
+        if dimensions not in [256, 512, 1024, 1536]:
+            raise ValueError(
+                f"Model '{provider_model_id}' only accepts dimension in [256 512 1024 1536]"
+                f"Request dimensions: {dimensions}"
+            )
+
+    async def cohere_embeddings(
+        self,
+        params: OpenAIEmbeddingsRequestWithExtraBody,
+    ) -> OpenAIEmbeddingsResponse:
+        """
+        Generate an embedding via OCI for non-OpenAI compatible Cohere models.
+        """
+        if not self.supports_tokenized_embeddings_input:
+            validate_embeddings_input_is_text(params)
+
+        provider_model_id = await self._get_provider_model_id(params.model)
+        self._validate_model_allowed(provider_model_id)
+
+        self._validate_cohere_dimensions(params.dimensions, provider_model_id)
+
+        embed_text_response = self.cohere_client.embed_text(
+            oci.generative_ai_inference.models.EmbedTextDetails(
+                compartment_id=self.config.oci_compartment_id,
+                serving_mode=oci.generative_ai_inference.models.OnDemandServingMode(model_id=provider_model_id),
+                inputs=params.input if isinstance(params.input, list) else [params.input],
+                embedding_types=[params.encoding_format],
+            )
+        )
+        logger.debug(embed_text_response.data._embeddings_by_type[params.encoding_format][0:10])
+        result = embed_text_response.data
+        data = []
+        for i, embedding_data in enumerate(result._embeddings_by_type[params.encoding_format]):
+            data.append(
+                OpenAIEmbeddingData(
+                    embedding=embedding_data,
+                    index=i,
+                )
+            )
+
+        if hasattr(result, "usage") and result.usage:
+            usage = OpenAIEmbeddingUsage(
+                prompt_tokens=result.usage.prompt_tokens,
+                total_tokens=result.usage.total_tokens,
+            )
+        else:
+            usage = OpenAIEmbeddingUsage(
+                prompt_tokens=0,
+                total_tokens=0,
+            )
+
+        return OpenAIEmbeddingsResponse(
+            data=data,
+            model=params.model,
+            usage=usage,
         )
