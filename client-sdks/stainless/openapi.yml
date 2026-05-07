@@ -430,6 +430,59 @@ paths:
           )
           print(response.choices[0].text)
   /v1/conversations:
+    get:
+      responses:
+        '200':
+          description: List of conversations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationList'
+        '400':
+          $ref: '#/components/responses/BadRequest400'
+          description: Bad Request
+        '429':
+          $ref: '#/components/responses/TooManyRequests429'
+          description: Too Many Requests
+        '500':
+          $ref: '#/components/responses/InternalServerError500'
+          description: Internal Server Error
+        default:
+          $ref: '#/components/responses/DefaultError'
+          description: Default Response
+      tags:
+      - Conversations
+      summary: List conversations.
+      description: List conversations for the authenticated user.
+      operationId: list_conversations_v1_conversations_get
+      parameters:
+      - name: after
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: After
+      - name: limit
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Limit
+      - name: order
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - asc
+            - desc
+            type: string
+          - type: 'null'
+          title: Order
     post:
       responses:
         '200':
@@ -439,28 +492,28 @@ paths:
               schema:
                 $ref: '#/components/schemas/Conversation'
         '400':
-          description: Bad Request
           $ref: '#/components/responses/BadRequest400'
+          description: Bad Request
         '429':
-          description: Too Many Requests
           $ref: '#/components/responses/TooManyRequests429'
+          description: Too Many Requests
         '500':
-          description: Internal Server Error
           $ref: '#/components/responses/InternalServerError500'
+          description: Internal Server Error
         default:
-          description: Default Response
           $ref: '#/components/responses/DefaultError'
+          description: Default Response
       tags:
       - Conversations
       summary: Create a conversation.
       description: Create a conversation.
       operationId: create_conversation_v1_conversations_post
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/CreateConversationRequest'
-        required: true
   /v1/conversations/{conversation_id}:
     get:
       responses:
@@ -11351,6 +11404,40 @@ components:
       - reasoning.encrypted_content
       title: ConversationItemInclude
       description: Specify additional output data to include in the model response.
+    ConversationList:
+      properties:
+        object:
+          type: string
+          title: Object
+          description: Object type
+          enum:
+          - list
+        data:
+          items:
+            $ref: '#/components/schemas/Conversation'
+          type: array
+          title: Data
+          description: List of conversations
+        first_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: The ID of the first conversation in the list
+        last_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: The ID of the last conversation in the list
+        has_more:
+          type: boolean
+          title: Has More
+          description: Whether there are more conversations available
+          default: false
+      type: object
+      required:
+      - data
+      title: ConversationList
+      description: List of conversations with pagination.
     CreateResponseRequest:
       properties:
         input:
@@ -15223,6 +15310,34 @@ components:
       required:
       - conversation_id
       title: ListItemsRequest
+      type: object
+    ListConversationsRequest:
+      description: Request model for listing conversations.
+      properties:
+        after:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: A conversation ID to list conversations after, used in pagination.
+          nullable: true
+        limit:
+          anyOf:
+          - maximum: 100
+            minimum: 1
+            type: integer
+          - type: 'null'
+          description: A limit on the number of objects to be returned (1-100, default 20).
+          nullable: true
+        order:
+          anyOf:
+          - enum:
+            - asc
+            - desc
+            type: string
+          - type: 'null'
+          description: The order to return conversations in (asc or desc, default desc).
+          nullable: true
+      title: ListConversationsRequest
       type: object
     DeleteItemRequest:
       description: Request model for deleting a conversation item.
