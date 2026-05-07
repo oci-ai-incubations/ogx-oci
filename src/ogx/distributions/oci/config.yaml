@@ -99,6 +99,8 @@ providers:
         table_name: s3_files_metadata
         backend: sql_default
   file_processors:
+  - provider_id: auto
+    provider_type: inline::auto
   - provider_id: docling
     provider_type: inline::docling
     config:

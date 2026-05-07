@@ -9,6 +9,7 @@ from pathlib import Path
 from ogx.core.datatypes import BuildProvider, Provider
 from ogx.distributions.template import DistributionTemplate, RunConfigSettings
 from ogx.providers.inline.batches.reference.config import ReferenceBatchesImplConfig
+from ogx.providers.inline.file_processor.auto.config import AutoFileProcessorConfig
 from ogx.providers.inline.file_processor.docling.config import DoclingFileProcessorConfig
 from ogx.providers.inline.files.localfs.config import LocalfsFilesImplConfig
 from ogx.providers.inline.safety.code_scanner.config import CodeScannerConfig
@@ -109,6 +110,12 @@ def get_distribution_template(name: str = "oci") -> DistributionTemplate:
         config=PromptGuardConfig.sample_run_config(f"~/.ogx/distributions/{name}"),
     )
 
+    auto_file_processor_provider = Provider(
+        provider_id="auto",
+        provider_type="inline::auto",
+        config=AutoFileProcessorConfig.sample_run_config(),
+    )
+
     docling_provider = Provider(
         provider_id="docling",
         provider_type="inline::docling",
@@ -134,7 +141,7 @@ def get_distribution_template(name: str = "oci") -> DistributionTemplate:
                     "vector_io": [vector_io_provider, sqlite_vec_provider, oci_vector_io_provider],
                     "safety": [code_scanner_provider, prompt_guard_provider],
                     "files": [files_provider, s3_files_provider],
-                    "file_processors": [docling_provider],
+                    "file_processors": [auto_file_processor_provider, docling_provider],
                     "batches": [batches_provider],
                 },
             ),
