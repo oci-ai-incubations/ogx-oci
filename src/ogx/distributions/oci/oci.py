@@ -10,6 +10,7 @@ from ogx.core.datatypes import BuildProvider, Provider
 from ogx.distributions.template import DistributionTemplate, RunConfigSettings
 from ogx.providers.inline.files.localfs.config import LocalfsFilesImplConfig
 from ogx.providers.inline.vector_io.faiss.config import FaissVectorIOConfig
+from ogx.providers.remote.files.s3.config import S3FilesImplConfig
 from ogx.providers.remote.inference.oci.config import OCIConfig
 
 
@@ -37,7 +38,10 @@ def get_distribution_template(name: str = "oci") -> DistributionTemplate:
             BuildProvider(provider_type="inline::file-search"),
             BuildProvider(provider_type="remote::model-context-protocol"),
         ],
-        "files": [BuildProvider(provider_type="inline::localfs")],
+        "files": [
+            BuildProvider(provider_type="inline::localfs"),
+            BuildProvider(provider_type="remote::s3"),
+        ],
     }
 
     inference_provider = Provider(
@@ -57,6 +61,12 @@ def get_distribution_template(name: str = "oci") -> DistributionTemplate:
         provider_type="inline::localfs",
         config=LocalfsFilesImplConfig.sample_run_config(f"~/.ogx/distributions/{name}"),
     )
+
+    s3_files_provider = Provider(
+        provider_id="s3-files",
+        provider_type="remote::s3",
+        config=S3FilesImplConfig.sample_run_config(f"~/.ogx/distributions/{name}"),
+    )
     return DistributionTemplate(
         name=name,
         distro_type="remote_hosted",
@@ -69,7 +79,7 @@ def get_distribution_template(name: str = "oci") -> DistributionTemplate:
                 provider_overrides={
                     "inference": [inference_provider],
                     "vector_io": [vector_io_provider],
-                    "files": [files_provider],
+                    "files": [files_provider, s3_files_provider],
                 },
             ),
         },

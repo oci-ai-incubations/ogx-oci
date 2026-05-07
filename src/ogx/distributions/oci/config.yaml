@@ -65,6 +65,18 @@ providers:
       metadata_store:
         table_name: files_metadata
         backend: sql_default
+  - provider_id: s3-files
+    provider_type: remote::s3
+    config:
+      bucket_name: ${env.S3_BUCKET_NAME}
+      region: ${env.AWS_REGION:=us-east-1}
+      aws_access_key_id: ${env.AWS_ACCESS_KEY_ID:=}
+      aws_secret_access_key: ${env.AWS_SECRET_ACCESS_KEY:=}
+      endpoint_url: ${env.S3_ENDPOINT_URL:=}
+      auto_create_bucket: ${env.S3_AUTO_CREATE_BUCKET:=false}
+      metadata_store:
+        table_name: s3_files_metadata
+        backend: sql_default
 storage:
   backends:
     kv_default:

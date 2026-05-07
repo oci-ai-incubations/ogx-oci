@@ -8,7 +8,7 @@ The `ogx/distribution-oci` distribution consists of the following provider confi
 
 | API | Provider(s) |
 |-----|-------------|
-| files | `inline::localfs` |
+| files | `inline::localfs`, `remote::s3` |
 | inference | `remote::oci` |
 | responses | `inline::builtin` |
 | safety | `inline::llama-guard` |
