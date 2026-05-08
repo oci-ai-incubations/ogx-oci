@@ -138,6 +138,17 @@ class ConversationItemList(BaseModel):
 
 
 @json_schema_type
+class ConversationList(BaseModel):
+    """List of conversations with pagination."""
+
+    object: Literal["list"] = Field(default="list", description="Object type")
+    data: list[Conversation] = Field(..., description="List of conversations")
+    first_id: str | None = Field(default=None, description="The ID of the first conversation in the list")
+    last_id: str | None = Field(default=None, description="The ID of the last conversation in the list")
+    has_more: bool = Field(default=False, description="Whether there are more conversations available")
+
+
+@json_schema_type
 class ConversationItemDeletedResource(BaseModel):
     """Response for deleted conversation item."""
 
@@ -244,6 +255,26 @@ class ListItemsRequest(BaseModel):
 
 
 @json_schema_type
+class ListConversationsRequest(BaseModel):
+    """Request model for listing conversations."""
+
+    after: str | None = Field(
+        default=None,
+        description="A conversation ID to list conversations after, used in pagination.",
+    )
+    limit: int | None = Field(
+        default=None,
+        ge=1,
+        le=100,
+        description="A limit on the number of objects to be returned (1-100, default 20).",
+    )
+    order: Literal["asc", "desc"] | None = Field(
+        default=None,
+        description="The order to return conversations in (asc or desc, default desc).",
+    )
+
+
+@json_schema_type
 class DeleteItemRequest(BaseModel):
     """Request model for deleting a conversation item."""
 
@@ -261,12 +292,14 @@ __all__ = [
     "ConversationItemInclude",
     "ConversationItemList",
     "ConversationItemDeletedResource",
+    "ConversationList",
     "CreateConversationRequest",
     "GetConversationRequest",
     "UpdateConversationRequest",
     "DeleteConversationRequest",
     "AddItemsRequest",
     "RetrieveItemRequest",
+    "ListConversationsRequest",
     "ListItemsRequest",
     "DeleteItemRequest",
 ]

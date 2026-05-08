@@ -8,12 +8,14 @@ The `ogx/distribution-oci` distribution consists of the following provider confi
 
 | API | Provider(s) |
 |-----|-------------|
-| files | `inline::localfs` |
+| batches | `inline::reference` |
+| file_processors | `inline::auto`, `inline::docling` |
+| files | `inline::localfs`, `remote::s3` |
 | inference | `remote::oci` |
 | responses | `inline::builtin` |
-| safety | `inline::llama-guard` |
+| safety | `inline::llama-guard`, `inline::code-scanner`, `inline::prompt-guard` |
 | tool_runtime | `remote::brave-search`, `remote::tavily-search`, `inline::file-search`, `remote::model-context-protocol` |
-| vector_io | `inline::faiss`, `remote::chromadb`, `remote::pgvector` |
+| vector_io | `inline::faiss`, `inline::sqlite-vec`, `remote::chromadb`, `remote::pgvector`, `remote::oci` |
 
 ## Environment Variables
 
@@ -28,6 +30,8 @@ The following environment variables can be configured:
 - `OCI_CONFIG_FILE_PATH`: OCI config file path (required if OCI_AUTH_TYPE is config_file) (default: `~/.oci/config`)
 
 - `OCI_CLI_PROFILE`: OCI CLI profile name to use from config file (default: `DEFAULT`)
+
+- `AUTH_VALIDATE_ENDPOINT`: URL of the auth-service token validation endpoint (POSTs {api_key, request} and expects {principal, attributes}) (default: `http://localhost:8080/auth/validate`)
 
 ## Prerequisites
 

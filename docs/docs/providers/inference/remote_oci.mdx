@@ -43,7 +43,7 @@ https://docs.oracle.com/en-us/iaas/Content/generative-ai/home.htm
 | `network.headers` | `dict[str, str] \| None` | No |  | Additional HTTP headers to include in all requests. |
 | `oci_auth_type` | `str` | No | instance_principal | OCI authentication type (must be one of: instance_principal, config_file) |
 | `oci_region` | `str` | No | us-ashburn-1 | OCI region (e.g., us-ashburn-1) |
-| `oci_compartment_id` | `str` | No |  | OCI compartment ID for the Generative AI service |
+| `oci_compartment_id` | `str \| None` | No |  | OCI compartment ID for the Generative AI service |
 | `oci_config_file_path` | `str` | No | ~/.oci/config | OCI config file path (required if oci_auth_type is config_file) |
 | `oci_config_profile` | `str` | No | DEFAULT | OCI config profile (required if oci_auth_type is config_file) |
 

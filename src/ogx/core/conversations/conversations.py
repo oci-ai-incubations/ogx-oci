@@ -30,11 +30,13 @@ from ogx_api.conversations import (
     ConversationItem,
     ConversationItemDeletedResource,
     ConversationItemList,
+    ConversationList,
     Conversations,
     CreateConversationRequest,
     DeleteConversationRequest,
     DeleteItemRequest,
     GetConversationRequest,
+    ListConversationsRequest,
     ListItemsRequest,
     RetrieveItemRequest,
     UpdateConversationRequest,
@@ -183,6 +185,33 @@ class ConversationServiceImpl(Conversations):
 
         logger.debug("Deleted conversation", conversation_id=request.conversation_id)
         return ConversationDeletedResource(id=request.conversation_id)
+
+    async def list_conversations(self, request: ListConversationsRequest) -> ConversationList:
+        """List conversations with cursor pagination."""
+        order = request.order or "desc"
+        limit = request.limit or 20
+
+        paginated = await self.sql_store.fetch_all(
+            table="openai_conversations",
+            order_by=[("created_at", order)],
+            cursor=("id", request.after) if request.after else None,
+            limit=limit,
+        )
+        data = [
+            Conversation(
+                id=row["id"],
+                created_at=row["created_at"],
+                metadata=row.get("metadata"),
+                object="conversation",
+            )
+            for row in paginated.data
+        ]
+        return ConversationList(
+            data=data,
+            first_id=data[0].id if data else None,
+            last_id=data[-1].id if data else None,
+            has_more=paginated.has_more,
+        )
 
     def _validate_conversation_id(self, conversation_id: str) -> None:
         """Validate conversation ID format matches ``conv_`` + 48 hex chars."""

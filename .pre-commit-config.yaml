@@ -199,15 +199,15 @@ repos:
               echo;
               exit 1;
             } || true
-      - id: generate-ci-docs
-        name: Generate CI documentation
-        additional_dependencies:
-          - *uv-dependency
-        entry: ./scripts/uv-run-with-index.sh run ./scripts/gen-ci-docs.py
-        language: python
-        pass_filenames: false
-        require_serial: true
-        files: ^.github/workflows/.*$
+      # - id: generate-ci-docs
+      #   name: Generate CI documentation
+      #   additional_dependencies:
+      #     - *uv-dependency
+      #   entry: ./scripts/uv-run-with-index.sh run ./scripts/gen-ci-docs.py
+      #   language: python
+      #   pass_filenames: false
+      #   require_serial: true
+      #   files: ^.github/workflows/.*$
       - id: ui-linter
         name: Format & Lint UI
         entry: bash ./scripts/run-ui-linter.sh

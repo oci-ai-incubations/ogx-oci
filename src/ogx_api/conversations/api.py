@@ -13,10 +13,12 @@ from .models import (
     ConversationItem,
     ConversationItemDeletedResource,
     ConversationItemList,
+    ConversationList,
     CreateConversationRequest,
     DeleteConversationRequest,
     DeleteItemRequest,
     GetConversationRequest,
+    ListConversationsRequest,
     ListItemsRequest,
     RetrieveItemRequest,
     UpdateConversationRequest,
@@ -30,6 +32,8 @@ class Conversations(Protocol):
     async def create_conversation(self, request: CreateConversationRequest) -> Conversation: ...
 
     async def get_conversation(self, request: GetConversationRequest) -> Conversation: ...
+
+    async def list_conversations(self, request: ListConversationsRequest) -> ConversationList: ...
 
     async def update_conversation(self, conversation_id: str, request: UpdateConversationRequest) -> Conversation: ...
 

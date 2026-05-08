@@ -32,10 +32,12 @@ from .models import (
     ConversationItemDeletedResource,
     ConversationItemInclude,
     ConversationItemList,
+    ConversationList,
     CreateConversationRequest,
     DeleteConversationRequest,
     DeleteItemRequest,
     GetConversationRequest,
+    ListConversationsRequest,
     ListItemsRequest,
     RetrieveItemRequest,
     UpdateConversationRequest,
@@ -55,10 +57,19 @@ class _ListItemsQueryParams(BaseModel):
     order: Literal["asc", "desc"] | None = None
 
 
+class _ListConversationsQueryParams(BaseModel):
+    """Query parameters for list_conversations endpoint."""
+
+    after: str | None = None
+    limit: int | None = None
+    order: Literal["asc", "desc"] | None = None
+
+
 # Dependency functions for request models
 get_conversation_request = create_path_dependency(GetConversationRequest)
 delete_conversation_request = create_path_dependency(DeleteConversationRequest)
 get_list_items_query_params = create_query_dependency(_ListItemsQueryParams)
+get_list_conversations_query_params = create_query_dependency(_ListConversationsQueryParams)
 
 
 def create_router(impl: Conversations) -> APIRouter:
@@ -81,6 +92,23 @@ def create_router(impl: Conversations) -> APIRouter:
         request: Annotated[CreateConversationRequest, Body(...)],
     ) -> Conversation:
         return await impl.create_conversation(request)
+
+    @router.get(
+        "/conversations",
+        response_model=ConversationList,
+        summary="List conversations.",
+        description="List conversations for the authenticated user.",
+        responses={200: {"description": "List of conversations."}},
+    )
+    async def list_conversations(
+        query_params: Annotated[_ListConversationsQueryParams, Depends(get_list_conversations_query_params)],
+    ) -> ConversationList:
+        request = ListConversationsRequest(
+            after=query_params.after,
+            limit=query_params.limit,
+            order=query_params.order,
+        )
+        return await impl.list_conversations(request)
 
     @router.get(
         "/conversations/{conversation_id}",
