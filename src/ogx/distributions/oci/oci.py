@@ -144,6 +144,12 @@ def get_distribution_template(name: str = "oci") -> DistributionTemplate:
                     "file_processors": [auto_file_processor_provider, docling_provider],
                     "batches": [batches_provider],
                 },
+                auth_config={
+                    "provider_config": {
+                        "type": "custom",
+                        "endpoint": "${env.AUTH_VALIDATE_ENDPOINT:=http://localhost:8080/auth/validate}",
+                    },
+                },
             ),
         },
         run_config_env_vars={
@@ -166,6 +172,10 @@ def get_distribution_template(name: str = "oci") -> DistributionTemplate:
             "OCI_CLI_PROFILE": (
                 "DEFAULT",
                 "OCI CLI profile name to use from config file",
+            ),
+            "AUTH_VALIDATE_ENDPOINT": (
+                "http://localhost:8080/auth/validate",
+                "URL of the auth-service token validation endpoint (POSTs {api_key, request} and expects {principal, attributes})",
             ),
         },
     )

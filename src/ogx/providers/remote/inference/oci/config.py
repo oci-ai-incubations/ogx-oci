@@ -47,8 +47,8 @@ class OCIConfig(RemoteInferenceProviderConfig):
         default_factory=lambda: os.getenv("OCI_REGION", "us-ashburn-1"),
         description="OCI region (e.g., us-ashburn-1)",
     )
-    oci_compartment_id: str = Field(
-        default_factory=lambda: os.getenv("OCI_COMPARTMENT_OCID", ""),
+    oci_compartment_id: str | None = Field(
+        default_factory=lambda: os.getenv("OCI_COMPARTMENT_OCID") or None,
         description="OCI compartment ID for the Generative AI service",
     )
     oci_config_file_path: str = Field(

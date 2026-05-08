@@ -145,3 +145,7 @@ registered_resources:
   vector_dbs: []
 server:
   port: 8321
+  auth:
+    provider_config:
+      type: custom
+      endpoint: ${env.AUTH_VALIDATE_ENDPOINT:=http://localhost:8080/auth/validate}

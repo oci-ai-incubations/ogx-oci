@@ -91,6 +91,9 @@ for more details about Oracle 26ai in general.
 | `persistence.backend` | `str` | No |  | Name of backend from storage.backends |
 | `consistency_level` | `str` | No | Strong | The consistency level of the OCI26ai server |
 | `vector_datatype` | `str` | No | FLOAT32 | Vector datatype for embeddings |
+| `pool_min` | `int` | No | 1 | Minimum number of connections in the Oracle pool |
+| `pool_max` | `int` | No | 10 | Maximum number of connections in the Oracle pool |
+| `pool_ping_interval` | `int` | No | 60 | Seconds between connection health checks (oracledb pool ping_interval) |
 
 ## Sample Configuration
 
