@@ -31,6 +31,8 @@ The following environment variables can be configured:
 
 - `OCI_CLI_PROFILE`: OCI CLI profile name to use from config file (default: `DEFAULT`)
 
+- `AUTH_VALIDATE_ENDPOINT`: URL of the auth-service token validation endpoint (POSTs {api_key, request} and expects {principal, attributes}) (default: `http://localhost:8080/auth/validate`)
+
 ## Prerequisites
 
 ### Oracle Cloud Infrastructure Setup
