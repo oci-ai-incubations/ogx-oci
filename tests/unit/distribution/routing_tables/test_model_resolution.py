@@ -30,10 +30,12 @@ def mock_provider():
 @pytest.fixture
 def routing_table(mock_provider):
     """Create a ModelsRoutingTable with a mock provider."""
+    dist_registry = AsyncMock()
+    dist_registry.get.return_value = None  # no existing entry by default
     table = ModelsRoutingTable(
         impls_by_provider_id={"test-provider": mock_provider},
         policy=MagicMock(),
-        dist_registry=MagicMock(),
+        dist_registry=dist_registry,
     )
     return table
 

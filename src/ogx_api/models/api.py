@@ -14,6 +14,7 @@ The FastAPI router is defined in ogx_api.models.fastapi_routes.
 from typing import Protocol, runtime_checkable
 
 from .models import (
+    AdminListModelsResponse,
     GetModelRequest,
     ListModelsResponse,
     Model,
@@ -36,3 +37,5 @@ class Models(Protocol):
     async def register_model(self, request: RegisterModelRequest) -> Model: ...
 
     async def unregister_model(self, request: UnregisterModelRequest) -> None: ...
+
+    async def list_all_models(self) -> AdminListModelsResponse: ...

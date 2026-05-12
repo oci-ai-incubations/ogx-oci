@@ -46,10 +46,6 @@ providers:
   safety:
   - provider_id: code-scanner
     provider_type: inline::code-scanner
-  - provider_id: prompt-guard
-    provider_type: inline::prompt-guard
-    config:
-      guard_type: injection
   responses:
   - provider_id: builtin
     provider_type: inline::builtin

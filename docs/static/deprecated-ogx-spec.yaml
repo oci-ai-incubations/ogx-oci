@@ -6476,49 +6476,44 @@ components:
       title: RerankResponse
       description: Response from a reranking request.
     RegisterModelRequest:
-      description: Request model for registering a model.
       properties:
         model_id:
-          description: The identifier of the model to register.
-          title: Model Id
           type: string
+          title: Model Id
+          description: The identifier of the model to register.
         provider_model_id:
           anyOf:
           - type: string
           - type: 'null'
           description: The identifier of the model in the provider.
-          nullable: true
         provider_id:
           anyOf:
           - type: string
           - type: 'null'
           description: The identifier of the provider.
-          nullable: true
         metadata:
           anyOf:
           - additionalProperties: true
             type: object
           - type: 'null'
           description: Any additional metadata for this model.
-          nullable: true
         model_type:
           anyOf:
           - $ref: '#/components/schemas/ModelType'
             title: ModelType
           - type: 'null'
           description: The type of model to register.
-          nullable: true
           title: ModelType
         model_validation:
           anyOf:
           - type: boolean
           - type: 'null'
           description: Enable model availability check during registration. When false (default), validation is deferred to runtime and model is preserved during provider refresh.
-          nullable: true
+      type: object
       required:
       - model_id
       title: RegisterModelRequest
-      type: object
+      description: Request model for registering a model.
     ParamType:
       discriminator:
         mapping:
@@ -6579,6 +6574,86 @@ components:
       - shield_id
       title: RegisterShieldRequest
       description: Request model for registering a shield.
+    AdminListModelsResponse:
+      properties:
+        data:
+          items:
+            $ref: '#/components/schemas/AdminModel'
+          type: array
+          title: Data
+          description: List of model objects with their visibility state.
+      type: object
+      required:
+      - data
+      title: AdminListModelsResponse
+      description: Admin response containing all model objects, including those hidden from the user-facing list.
+    AdminModel:
+      properties:
+        identifier:
+          type: string
+          title: Identifier
+          description: Unique identifier for this resource in ogx
+        provider_resource_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Unique identifier for this resource in the provider
+        provider_id:
+          type: string
+          title: Provider Id
+          description: ID of the provider that owns this resource
+        type:
+          type: string
+          title: Type
+          enum:
+          - model
+        metadata:
+          additionalProperties: true
+          type: object
+          title: Metadata
+          description: Any additional metadata for this model
+        created:
+          type: integer
+          title: Created
+          description: The Unix timestamp in seconds when the model was created.
+        owned_by:
+          type: string
+          title: Owned By
+          description: The owner of the model.
+          default: ogx
+        model_type:
+          $ref: '#/components/schemas/ModelType'
+          default: llm
+        model_validation:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: Enable model availability check during registration. When false (default), validation is deferred to runtime and model is preserved during provider refresh.
+        hidden:
+          type: boolean
+          title: Hidden
+          description: True if this model has been administratively hidden from the user-facing model list.
+          default: false
+        id:
+          type: string
+          title: Id
+          description: The model identifier (OpenAI-compatible alias for identifier).
+          readOnly: true
+        object:
+          type: string
+          title: Object
+          description: The object type, always 'model'.
+          readOnly: true
+          enum:
+          - model
+      type: object
+      required:
+      - identifier
+      - provider_id
+      - id
+      - object
+      title: AdminModel
+      description: A model resource extended with admin-only visibility state.
     AllowedToolsFilter:
       properties:
         tool_names:
