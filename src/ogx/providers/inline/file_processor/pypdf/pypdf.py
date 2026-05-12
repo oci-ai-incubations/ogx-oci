@@ -31,6 +31,27 @@ log = get_logger(name=__name__, category="providers::file_processors")
 # Large enough to fit any reasonable document in one chunk
 SINGLE_CHUNK_WINDOW_TOKENS = 1_000_000
 
+# application/* MIME types whose payload is plain text and should be processed
+# via the text path. mimetypes.guess_type() returns these (not text/*) for files
+# like .json and .xml, per the registered IANA types (RFC 8259, RFC 7303).
+PYPDF_TEXT_LIKE_APPLICATION_MIME_TYPES: frozenset[str] = frozenset(
+    {
+        "application/json",
+        "application/xml",
+        "application/xhtml+xml",
+        "application/javascript",
+        "application/x-javascript",
+        "application/yaml",
+        "application/x-yaml",
+    }
+)
+
+
+def _pypdf_supported_description() -> str:
+    """Human-readable summary derived from the pypdf allowlist."""
+    extras = ", ".join(sorted(PYPDF_TEXT_LIKE_APPLICATION_MIME_TYPES))
+    return f"application/pdf, text/* (txt, csv, md, html, code, etc.), {extras}"
+
 
 class PyPDFFileProcessor:
     """PyPDF-based file processor for PDF documents."""
@@ -75,14 +96,14 @@ class PyPDFFileProcessor:
 
         if mime_type == "application/pdf":
             return self._process_pdf(content, filename, file_id, chunking_strategy, start_time)
-        elif mime_category == "text":
+        elif mime_category == "text" or mime_type in PYPDF_TEXT_LIKE_APPLICATION_MIME_TYPES:
             return self._process_text(content, filename, file_id, chunking_strategy, start_time)
         else:
             raise HTTPException(
                 status_code=422,
                 detail=(
                     f"File type '{mime_type or 'unknown'}' is not supported by the pypdf file processor. "
-                    "Supported types: PDF and text files (txt, csv, md, etc.)."
+                    f"Supported types: {_pypdf_supported_description()}."
                 ),
             )
 

@@ -123,6 +123,45 @@ async def test_rejects_unsupported_format_with_422(auto_processor):
     assert "pdf" in detail
 
 
+async def test_routes_json_to_pypdf(auto_processor):
+    """Regression: application/json was rejected even though the error message
+    advertised json as supported (allowlist and description had drifted)."""
+    json_bytes = b'{"name": "Alice", "age": 30}'
+    file = UploadFile(filename="data.json", file=io.BytesIO(json_bytes))
+    request = ProcessFileRequest()
+
+    result = await auto_processor.process_file(request, file=file)
+    assert result is not None
+    assert len(result.chunks) >= 1
+
+
+async def test_routes_xml_to_pypdf(auto_processor):
+    xml_bytes = b"<?xml version='1.0'?><root><item>hello</item></root>"
+    file = UploadFile(filename="data.xml", file=io.BytesIO(xml_bytes))
+    request = ProcessFileRequest()
+
+    result = await auto_processor.process_file(request, file=file)
+    assert result is not None
+    assert len(result.chunks) >= 1
+
+
+def test_supported_description_lists_every_allowlisted_type():
+    """The human-readable description must be derived from the allowlists so the
+    two can't disagree — the bug this guards against was the description
+    advertising json/xml as supported while the allowlist omitted them."""
+    from ogx.providers.inline.file_processor.auto.auto import (
+        MARKITDOWN_MIME_TYPES,
+        SUPPORTED_DESCRIPTION,
+    )
+    from ogx.providers.inline.file_processor.pypdf.pypdf import (
+        PYPDF_TEXT_LIKE_APPLICATION_MIME_TYPES,
+    )
+
+    expected = {"application/pdf", *PYPDF_TEXT_LIKE_APPLICATION_MIME_TYPES, *MARKITDOWN_MIME_TYPES}
+    for mime in expected:
+        assert mime in SUPPORTED_DESCRIPTION, f"{mime} missing from SUPPORTED_DESCRIPTION"
+
+
 async def test_routes_file_id_using_resolved_filename(auto_processor_with_files_api):
     request = ProcessFileRequest(file_id="file-123456")
 
