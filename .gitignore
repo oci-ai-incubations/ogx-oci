@@ -41,6 +41,8 @@ docs/docs/api-experimental/
 docs/docs/api/
 tests/integration/client-typescript/node_modules/
 .ts-client-checkout/
+.llama-stack/*
+.oci_config/*
 
 # oracle connection files
 **/tnsnames.ora

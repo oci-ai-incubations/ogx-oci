@@ -128,8 +128,8 @@
     "conformance": {
       "score": 91.8,
       "issues": 184,
-      "missing_properties": 101,
-      "total_problems": 285,
+      "missing_properties": 102,
+      "total_problems": 286,
       "total_properties": 3487
     }
   },
@@ -1344,9 +1344,9 @@
       ]
     },
     "Models": {
-      "score": 93.3,
+      "score": 86.7,
       "issues": 1,
-      "missing_properties": 0,
+      "missing_properties": 1,
       "total_properties": 15,
       "endpoints": [
         {
@@ -1364,6 +1364,15 @@
         {
           "path": "/models/{model}",
           "operations": [
+            {
+              "method": "DELETE",
+              "missing_properties": [
+                "DELETE.responses.200"
+              ],
+              "conformance_issues": [],
+              "missing_count": 1,
+              "issues_count": 0
+            },
             {
               "method": "GET",
               "missing_properties": [],
