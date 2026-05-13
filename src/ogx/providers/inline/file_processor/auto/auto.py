@@ -11,7 +11,10 @@ from fastapi import HTTPException, UploadFile
 from ogx.providers.inline.file_processor.markitdown.config import MarkItDownFileProcessorConfig
 from ogx.providers.inline.file_processor.markitdown.markitdown_processor import MarkItDownFileProcessor
 from ogx.providers.inline.file_processor.pypdf.config import PyPDFFileProcessorConfig
-from ogx.providers.inline.file_processor.pypdf.pypdf import PyPDFFileProcessor
+from ogx.providers.inline.file_processor.pypdf.pypdf import (
+    PYPDF_TEXT_LIKE_APPLICATION_MIME_TYPES,
+    PyPDFFileProcessor,
+)
 from ogx_api.file_processors import ProcessFileRequest, ProcessFileResponse
 from ogx_api.files import RetrieveFileRequest
 
@@ -47,11 +50,19 @@ MARKITDOWN_MIME_TYPES = {
     "audio/x-wav",  # .wav
 }
 
-SUPPORTED_DESCRIPTION = (
-    "PDF, text (txt, csv, md, json, xml, html, code), "
-    "office (DOCX, PPTX, XLSX, XLS, DOC, PPT, RTF), "
-    "EPUB, RSS, ZIP, images, and audio"
-)
+
+def _build_supported_description() -> str:
+    """Human-readable summary of supported MIME types, derived from the allowlists.
+
+    Built from the same sets used for routing so the error response and the
+    accept logic can never disagree.
+    """
+    pypdf_types = sorted({"application/pdf", *PYPDF_TEXT_LIKE_APPLICATION_MIME_TYPES})
+    markitdown_types = sorted(MARKITDOWN_MIME_TYPES)
+    return ", ".join(["text/*", *pypdf_types, *markitdown_types])
+
+
+SUPPORTED_DESCRIPTION = _build_supported_description()
 
 
 class AutoFileProcessor:
@@ -89,7 +100,11 @@ class AutoFileProcessor:
         mime_type, _ = mimetypes.guess_type(filename)
         mime_category = mime_type.split("/")[0] if (mime_type and "/" in mime_type) else None
 
-        if mime_type == "application/pdf" or mime_category == "text":
+        if (
+            mime_type == "application/pdf"
+            or mime_category == "text"
+            or mime_type in PYPDF_TEXT_LIKE_APPLICATION_MIME_TYPES
+        ):
             return await self.pypdf.process_file(
                 file=file,
                 file_id=request.file_id,

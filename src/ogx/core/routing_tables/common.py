@@ -10,6 +10,7 @@ from ogx.core.access_control.access_control import AccessDeniedError, is_action_
 from ogx.core.access_control.datatypes import Action
 from ogx.core.datatypes import (
     AccessRule,
+    RegistryEntrySource,
     RoutableObject,
     RoutableObjectWithProvider,
     RoutedProtocol,
@@ -259,6 +260,8 @@ class CommonRoutingTableImpl(RoutingTable):
 async def lookup_model(routing_table: CommonRoutingTableImpl, model_id: str) -> Model:
     """Look up a model by identifier from the routing table.
 
+    Models that have been administratively hidden (tombstoned) are treated as not found.
+
     Args:
         routing_table: The routing table to search.
         model_id: The model identifier to look up.
@@ -267,9 +270,11 @@ async def lookup_model(routing_table: CommonRoutingTableImpl, model_id: str) -> 
         The found Model object.
 
     Raises:
-        ModelNotFoundError: If no model with the given identifier exists.
+        ModelNotFoundError: If no model with the given identifier exists or it has been hidden.
     """
     model = await routing_table.get_object_by_identifier("model", model_id)
     if not model:
+        raise ModelNotFoundError(model_id)
+    if getattr(model, "source", None) == RegistryEntrySource.admin_removed:
         raise ModelNotFoundError(model_id)
     return model

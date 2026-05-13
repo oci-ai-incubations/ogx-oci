@@ -304,6 +304,8 @@ from .messages import (
     AnthropicUsage,
 )
 from .models import (
+    AdminListModelsResponse,
+    AdminModel,
     CommonModelFields,
     GetModelRequest,
     ListModelsResponse,
@@ -652,6 +654,8 @@ __all__ = [
     "InspectProviderRequest",
     "InternalServerError",
     "Admin",
+    "AdminListModelsResponse",
+    "AdminModel",
     "Int4QuantizationConfig",
     "InterleavedContent",
     "InterleavedContentItem",

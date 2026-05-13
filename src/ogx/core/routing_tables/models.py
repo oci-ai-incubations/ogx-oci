@@ -7,7 +7,7 @@
 import time
 from typing import Any
 
-from ogx.core.access_control.access_control import is_action_allowed
+from ogx.core.access_control.access_control import AccessDeniedError, is_action_allowed
 from ogx.core.datatypes import (
     ModelWithOwner,
     RegistryEntrySource,
@@ -16,6 +16,8 @@ from ogx.core.request_headers import PROVIDER_DATA_VAR, NeedsRequestProviderData
 from ogx.core.utils.dynamic import instantiate_class_type
 from ogx.log import get_logger
 from ogx_api import (
+    AdminListModelsResponse,
+    AdminModel,
     GetModelRequest,
     ListModelsResponse,
     Model,
@@ -105,6 +107,15 @@ class ModelsRoutingTable(CommonRoutingTableImpl, Models):
 
             await self.update_registered_models(provider_id, models)
 
+    async def _get_tombstoned_identifiers(self) -> set[str]:
+        """Return identifiers of all admin-hidden models in the registry."""
+        all_objs = await self.dist_registry.get_all()
+        return {
+            obj.identifier
+            for obj in all_objs
+            if obj.type == "model" and getattr(obj, "source", None) == RegistryEntrySource.admin_removed
+        }
+
     async def _get_dynamic_models_from_provider_data(self) -> list[Model]:
         """
         Fetch models from providers that have credentials in the current request's provider_data.
@@ -121,6 +132,7 @@ class ModelsRoutingTable(CommonRoutingTableImpl, Models):
 
         dynamic_models = []
         user = get_authenticated_user()
+        tombstoned = await self._get_tombstoned_identifiers()
 
         for provider_id, provider in self.impls_by_provider_id.items():
             # Check if this provider supports provider_data
@@ -153,6 +165,10 @@ class ModelsRoutingTable(CommonRoutingTableImpl, Models):
                     # Only add prefix if model identifier doesn't already have it
                     if not model.identifier.startswith(f"{provider_id}/"):
                         model.identifier = f"{provider_id}/{model.provider_resource_id}"
+
+                    # Skip models that an admin has tombstoned in the registry
+                    if model.identifier in tombstoned:
+                        continue
 
                     # Convert to ModelWithOwner for RBAC check
                     temp_model = ModelWithOwner(
@@ -188,8 +204,12 @@ class ModelsRoutingTable(CommonRoutingTableImpl, Models):
         return dynamic_models
 
     async def list_models(self) -> ListModelsResponse:
-        # Get models from registry
-        registry_models = await self.get_all_with_type("model")
+        # Get models from registry, excluding admin-hidden entries
+        registry_models = [
+            m
+            for m in await self.get_all_with_type("model")
+            if getattr(m, "source", None) != RegistryEntrySource.admin_removed
+        ]
 
         # Get additional models available via provider_data (user-specific, not cached)
         dynamic_models = await self._get_dynamic_models_from_provider_data()
@@ -201,8 +221,12 @@ class ModelsRoutingTable(CommonRoutingTableImpl, Models):
         return ListModelsResponse(data=registry_models + unique_dynamic_models)
 
     async def openai_list_models(self) -> OpenAIListModelsResponse:
-        # Get models from registry
-        registry_models = await self.get_all_with_type("model")
+        # Get models from registry, excluding admin-hidden entries
+        registry_models = [
+            m
+            for m in await self.get_all_with_type("model")
+            if getattr(m, "source", None) != RegistryEntrySource.admin_removed
+        ]
 
         # Get additional models available via provider_data (user-specific, not cached)
         dynamic_models = await self._get_dynamic_models_from_provider_data()
@@ -229,6 +253,34 @@ class ModelsRoutingTable(CommonRoutingTableImpl, Models):
             for model in all_models
         ]
         return OpenAIListModelsResponse(data=openai_models)
+
+    async def list_all_models(self) -> AdminListModelsResponse:
+        """Admin-only listing that includes models hidden from the user-facing list.
+
+        Each returned entry carries a `hidden` flag. Visibility into a row requires
+        `delete` permission on it — consistent with the permission required to hide
+        or restore a model.
+        """
+        user = get_authenticated_user()
+        all_objs = await self.dist_registry.get_all()
+        items: list[AdminModel] = []
+        for obj in all_objs:
+            if obj.type != "model":
+                continue
+            if not is_action_allowed(self.policy, "delete", obj, user):
+                continue
+            hidden = getattr(obj, "source", None) == RegistryEntrySource.admin_removed
+            items.append(
+                AdminModel(
+                    identifier=obj.identifier,
+                    provider_resource_id=obj.provider_resource_id,
+                    provider_id=obj.provider_id,
+                    metadata=obj.metadata,
+                    model_type=obj.model_type,
+                    hidden=hidden,
+                )
+            )
+        return AdminListModelsResponse(data=items)
 
     async def get_model(self, request_or_model_id: GetModelRequest | str) -> Model:
         # Support both the public Models API (GetModelRequest) and internal ModelStore interface (string)
@@ -293,6 +345,23 @@ class ModelsRoutingTable(CommonRoutingTableImpl, Models):
                     "Use the provider_id as a prefix to disambiguate, e.g. 'provider_id/model_id'."
                 )
 
+        # Resurrect a tombstoned model if one exists at this identifier.
+        # We check both the qualified and bare identifier forms used at registration time.
+        candidate_identifiers = [model_id]
+        if not model_id.startswith(f"{provider_id}/"):
+            candidate_identifiers.append(f"{provider_id}/{model_id}")
+        for candidate in candidate_identifiers:
+            tombstoned = await self.dist_registry.get("model", candidate)
+            if tombstoned is None or getattr(tombstoned, "source", None) != RegistryEntrySource.admin_removed:
+                continue
+            user = get_authenticated_user()
+            if not is_action_allowed(self.policy, "create", tombstoned, user):
+                raise AccessDeniedError("create", tombstoned, user)
+            tombstoned.source = RegistryEntrySource.via_register_api
+            await self.dist_registry.update(tombstoned)
+            logger.info("Resurrected hidden model", model=tombstoned.identifier)
+            return tombstoned
+
         provider_model_id = provider_model_id or model_id
         metadata = metadata or {}
         model_type = model_type or ModelType.llm
@@ -354,6 +423,18 @@ class ModelsRoutingTable(CommonRoutingTableImpl, Models):
         existing_model = await self.get_model(model_id)
         if existing_model is None:
             raise ModelNotFoundError(model_id)
+
+        # Tombstone provider-listed models so the deletion survives provider refresh.
+        # User-registered models are hard-deleted via the normal unregister path.
+        if getattr(existing_model, "source", None) == RegistryEntrySource.listed_from_provider:
+            user = get_authenticated_user()
+            if not is_action_allowed(self.policy, "delete", existing_model, user):
+                raise AccessDeniedError("delete", existing_model, user)
+            existing_model.source = RegistryEntrySource.admin_removed
+            await self.dist_registry.update(existing_model)
+            logger.info("Tombstoned model", model=existing_model.identifier)
+            return
+
         await self.unregister_object(existing_model)
 
     async def update_registered_models(
@@ -361,16 +442,22 @@ class ModelsRoutingTable(CommonRoutingTableImpl, Models):
         provider_id: str,
         models: list[Model],
     ) -> None:
-        existing_models = await self.get_all_with_type("model")
+        # Bypass routing-table filters so we see tombstoned entries here.
+        existing_models = [
+            obj for obj in await self.dist_registry.get_all() if obj.type == "model" and obj.provider_id == provider_id
+        ]
 
         # we may have an alias for the model registered by the user (or during initialization
         # from config.yaml) that we need to keep track of
         model_ids = {}
+        # Identifiers an admin has hidden — these must not be re-registered by the refresh loop.
+        tombstoned_identifiers: set[str] = set()
         for model in existing_models:
-            if model.provider_id != provider_id:
-                continue
             if model.source == RegistryEntrySource.via_register_api:
                 model_ids[model.provider_resource_id] = model.identifier
+                continue
+            if model.source == RegistryEntrySource.admin_removed:
+                tombstoned_identifiers.add(model.identifier)
                 continue
 
             logger.debug("Unregistering model", model=model.identifier)
@@ -390,6 +477,11 @@ class ModelsRoutingTable(CommonRoutingTableImpl, Models):
                     model=model.identifier,
                     provider_resource_id=model.provider_resource_id,
                 )
+                continue
+
+            # Respect admin tombstones — do not re-register a model that has been hidden.
+            if model.identifier in tombstoned_identifiers:
+                logger.debug("Skipping admin-hidden model", model=model.identifier)
                 continue
 
             logger.debug("Registering model", model=model.identifier, provider_resource_id=model.provider_resource_id)

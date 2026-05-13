@@ -50,6 +50,7 @@ class RegistryEntrySource(StrEnum):
 
     via_register_api = "via_register_api"
     listed_from_provider = "listed_from_provider"
+    admin_removed = "admin_removed"
 
 
 class User(BaseModel):
