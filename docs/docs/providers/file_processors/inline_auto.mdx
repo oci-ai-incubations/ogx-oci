@@ -18,6 +18,10 @@ Composite file processor that automatically dispatches to the appropriate backen
 | `default_chunk_overlap_tokens` | `int` | No | 400 | Default chunk overlap in tokens when chunking_strategy type is 'auto' |
 | `extract_metadata` | `bool` | No | True | Whether to extract PDF metadata (title, author, etc.) |
 | `clean_text` | `bool` | No | True | Whether to clean extracted text (remove extra whitespace, normalize line breaks) |
+| `prefer_docling_for_pdfs` | `bool` | No | False | When True, PDFs are processed by the inline docling backend instead of PyPDF. Docling is structure-aware and natively extracts embedded pictures (writing their file_ids onto chunk.metadata['image_file_ids']) — the foundation for multimodal RAG. Trade-offs vs PyPDF: significantly slower ingest, larger memory footprint, and structurally-different chunk shape. Other MIME types are unaffected. |
+| `docling_extract_images` | `bool` | No | True | Only consulted when prefer_docling_for_pdfs is True. Whether the docling backend should extract and upload embedded pictures to the Files API. See DoclingFileProcessorConfig.extract_images for details. |
+| `docling_images_scale` | `float` | No | 2.0 | Only consulted when prefer_docling_for_pdfs is True. Render scale passed to docling's PDF pipeline for picture rasterisation. |
+| `docling_min_image_dim_px` | `int` | No | 64 | Only consulted when prefer_docling_for_pdfs is True. Images smaller than this width or height (in pixels) are skipped during extraction. |
 
 ## Sample Configuration
 

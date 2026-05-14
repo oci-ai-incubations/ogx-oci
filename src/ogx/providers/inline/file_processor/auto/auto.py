@@ -8,6 +8,8 @@ import mimetypes
 
 from fastapi import HTTPException, UploadFile
 
+from ogx.providers.inline.file_processor.docling.config import DoclingFileProcessorConfig
+from ogx.providers.inline.file_processor.docling.docling import DoclingFileProcessor
 from ogx.providers.inline.file_processor.markitdown.config import MarkItDownFileProcessorConfig
 from ogx.providers.inline.file_processor.markitdown.markitdown_processor import MarkItDownFileProcessor
 from ogx.providers.inline.file_processor.pypdf.config import PyPDFFileProcessorConfig
@@ -80,6 +82,19 @@ class AutoFileProcessor:
         )
         self.markitdown = MarkItDownFileProcessor(markitdown_config, files_api)
 
+        # Lazily-instantiated docling backend — only constructed when prefer_docling_for_pdfs
+        # is enabled, so deployments not opting in pay no startup cost for the heavy converter.
+        self.docling: DoclingFileProcessor | None = None
+        if config.prefer_docling_for_pdfs:
+            docling_config = DoclingFileProcessorConfig(
+                default_chunk_size_tokens=config.default_chunk_size_tokens,
+                default_chunk_overlap_tokens=config.default_chunk_overlap_tokens,
+                extract_images=config.docling_extract_images,
+                images_scale=config.docling_images_scale,
+                min_image_dim_px=config.docling_min_image_dim_px,
+            )
+            self.docling = DoclingFileProcessor(docling_config, files_api)
+
     async def process_file(
         self,
         request: ProcessFileRequest,
@@ -88,6 +103,9 @@ class AutoFileProcessor:
         filename = await self._resolve_filename(request, file)
         mime_type, _ = mimetypes.guess_type(filename)
         mime_category = mime_type.split("/")[0] if (mime_type and "/" in mime_type) else None
+
+        if mime_type == "application/pdf" and self.docling is not None:
+            return await self.docling.process_file(request=request, file=file)
 
         if mime_type == "application/pdf" or mime_category == "text":
             return await self.pypdf.process_file(

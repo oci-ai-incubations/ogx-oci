@@ -129,3 +129,66 @@ async def test_routes_file_id_using_resolved_filename(auto_processor_with_files_
     result = await auto_processor_with_files_api.process_file(request)
     assert result is not None
     assert len(result.chunks) >= 1
+
+
+async def test_docling_backend_not_constructed_when_flag_off():
+    config = AutoFileProcessorConfig()
+    files_api = MagicMock()
+    proc = AutoFileProcessor(config, files_api)
+    assert proc.docling is None
+
+
+async def test_prefer_docling_for_pdfs_constructs_docling_backend():
+    config = AutoFileProcessorConfig(
+        prefer_docling_for_pdfs=True,
+        docling_extract_images=True,
+        docling_images_scale=2.5,
+        docling_min_image_dim_px=128,
+    )
+    files_api = MagicMock()
+    proc = AutoFileProcessor(config, files_api)
+
+    assert proc.docling is not None
+    assert proc.docling.config.extract_images is True
+    assert proc.docling.config.images_scale == 2.5
+    assert proc.docling.config.min_image_dim_px == 128
+    # Same files_api instance gets threaded through
+    assert proc.docling.files_api is files_api
+
+
+async def test_pdf_routes_to_docling_when_flag_on():
+    config = AutoFileProcessorConfig(prefer_docling_for_pdfs=True)
+    files_api = MagicMock()
+    proc = AutoFileProcessor(config, files_api)
+
+    sentinel_response = MagicMock()
+    proc.docling.process_file = AsyncMock(return_value=sentinel_response)
+    proc.pypdf.process_file = AsyncMock(return_value=MagicMock())  # should not be called
+
+    file = UploadFile(filename="test.pdf", file=io.BytesIO(b"%PDF-1.4 minimal"))
+    request = ProcessFileRequest()
+
+    result = await proc.process_file(request, file=file)
+
+    assert result is sentinel_response
+    proc.docling.process_file.assert_awaited_once()
+    proc.pypdf.process_file.assert_not_awaited()
+
+
+async def test_text_files_still_route_to_pypdf_when_docling_flag_on():
+    config = AutoFileProcessorConfig(prefer_docling_for_pdfs=True)
+    files_api = MagicMock()
+    proc = AutoFileProcessor(config, files_api)
+
+    sentinel_response = MagicMock()
+    proc.pypdf.process_file = AsyncMock(return_value=sentinel_response)
+    proc.docling.process_file = AsyncMock(return_value=MagicMock())  # should not be called
+
+    file = UploadFile(filename="notes.txt", file=io.BytesIO(b"plain text"))
+    request = ProcessFileRequest()
+
+    result = await proc.process_file(request, file=file)
+
+    assert result is sentinel_response
+    proc.pypdf.process_file.assert_awaited_once()
+    proc.docling.process_file.assert_not_awaited()
