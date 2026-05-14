@@ -122,7 +122,6 @@ class TestExtractAndUploadPictures:
         api.openai_upload_file.side_effect = _upload
         return api
 
-    @pytest.mark.asyncio
     async def test_returns_empty_when_extract_images_disabled(self, files_api: AsyncMock) -> None:
         cfg = DoclingFileProcessorConfig(extract_images=False)
         processor = DoclingFileProcessor(cfg, files_api=files_api)
@@ -133,7 +132,6 @@ class TestExtractAndUploadPictures:
         assert result == {}
         files_api.openai_upload_file.assert_not_awaited()
 
-    @pytest.mark.asyncio
     async def test_returns_empty_when_files_api_missing(self, config: DoclingFileProcessorConfig) -> None:
         processor = DoclingFileProcessor(config, files_api=None)
         doc = _fake_doc([_picture("#/pictures/0", _make_pil_image())])
@@ -142,7 +140,6 @@ class TestExtractAndUploadPictures:
 
         assert result == {}
 
-    @pytest.mark.asyncio
     async def test_uploads_each_picture_and_returns_map(
         self, config: DoclingFileProcessorConfig, files_api: AsyncMock
     ) -> None:
@@ -162,7 +159,6 @@ class TestExtractAndUploadPictures:
         assert result == {"#/pictures/0": "file-001", "#/pictures/1": "file-002"}
         assert files_api.openai_upload_file.await_count == 2
 
-    @pytest.mark.asyncio
     async def test_skips_pictures_below_min_dim(self, config: DoclingFileProcessorConfig, files_api: AsyncMock) -> None:
         processor = DoclingFileProcessor(config, files_api=files_api)
         items = [
@@ -180,7 +176,6 @@ class TestExtractAndUploadPictures:
         assert result == {"#/pictures/big": "file-001"}
         assert files_api.openai_upload_file.await_count == 1
 
-    @pytest.mark.asyncio
     async def test_continues_when_individual_upload_fails(self, config: DoclingFileProcessorConfig) -> None:
         files_api = AsyncMock()
         files_api._uploads = 0
@@ -208,7 +203,6 @@ class TestExtractAndUploadPictures:
         # First upload fails, second succeeds. Only the surviving picture appears in the map.
         assert result == {"#/pictures/1": "file-002"}
 
-    @pytest.mark.asyncio
     async def test_skips_pictures_with_no_renderable_image(
         self, config: DoclingFileProcessorConfig, files_api: AsyncMock
     ) -> None:
@@ -228,7 +222,6 @@ class TestExtractAndUploadPictures:
         assert result == {"#/pictures/1": "file-001"}
         assert files_api.openai_upload_file.await_count == 1
 
-    @pytest.mark.asyncio
     async def test_uploaded_filename_contains_picture_ref(
         self, config: DoclingFileProcessorConfig, files_api: AsyncMock
     ) -> None:
