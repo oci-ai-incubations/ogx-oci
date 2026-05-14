@@ -4,21 +4,30 @@
 # This source code is licensed under the terms described in the LICENSE file in
 # the root directory of this source tree.
 
+import io
 import os
 import tempfile
 import time
 import uuid
 from typing import Any
 
-from docling.chunking import HybridChunker
-from docling.document_converter import DocumentConverter
-from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
 from fastapi import UploadFile
+
+# `docling-core` ships only the lightweight type definitions; the heavy `docling` package
+# (DocumentConverter, HybridChunker) is imported lazily inside the methods that need it. This
+# keeps unit-test imports cheap and avoids dragging in torch/HuggingFace at module-load time.
+try:
+    from docling_core.types.doc.document import PictureItem
+except ImportError:  # pragma: no cover - fallback only exercised when docling-core is absent
+
+    class PictureItem:  # type: ignore[no-redef]
+        """Sentinel — isinstance checks always return False when the real type is unavailable."""
+
 
 from ogx.log import get_logger
 from ogx.providers.utils.vector_io.vector_utils import generate_chunk_id
 from ogx_api.file_processors import ProcessFileRequest, ProcessFileResponse
-from ogx_api.files import RetrieveFileContentRequest, RetrieveFileRequest
+from ogx_api.files import OpenAIFilePurpose, RetrieveFileContentRequest, RetrieveFileRequest, UploadFileRequest
 from ogx_api.vector_io import (
     Chunk,
     ChunkMetadata,
@@ -29,14 +38,22 @@ from .config import DoclingFileProcessorConfig
 
 log = get_logger(name=__name__, category="providers::file_processors")
 
+# Metadata key under which extracted image file_ids are stored on each chunk. Documented as part
+# of the multimodal RAG pipeline contract — Phase 2 work consumes this key during retrieval and
+# Phase 3 work folds the referenced images into the next chat completion as input_image parts.
+IMAGE_FILE_IDS_METADATA_KEY = "image_file_ids"
+
 
 class DoclingFileProcessor:
     """Docling-based file processor with structure-aware chunking.
 
     Supports multiple file formats via docling's DocumentConverter (PDF, DOCX, PPTX, HTML, images, etc.).
+    When `config.extract_images` is enabled and a Files API binding is available, each embedded
+    picture in the source document is rasterised, uploaded to the Files API, and its returned
+    file_id is appended to the owning chunk's metadata under `image_file_ids`.
     """
 
-    def __init__(self, config: DoclingFileProcessorConfig, files_api=None) -> None:
+    def __init__(self, config: DoclingFileProcessorConfig, files_api: Any | None = None) -> None:
         self.config = config
         self.files_api = files_api
 
@@ -76,7 +93,7 @@ class DoclingFileProcessor:
             tmp.write(content)
             tmp.flush()
 
-            converter = DocumentConverter()
+            converter = self._build_converter()
             result = converter.convert(tmp.name)
 
         doc = result.document
@@ -88,6 +105,13 @@ class DoclingFileProcessor:
         if file_id:
             document_metadata["file_id"] = file_id
 
+        # Extract and upload images before chunking so the picture_ref -> file_id map is ready
+        # when we walk chunk.meta.doc_items. Failures upload-side degrade gracefully: chunks are
+        # still produced with no image_file_ids.
+        picture_file_ids = await self._extract_and_upload_pictures(doc, filename=filename)
+
+        chunks = self._create_chunks(doc, document_id, chunking_strategy, document_metadata, picture_file_ids)
+
         processing_time_ms = int((time.time() - start_time) * 1000)
 
         response_metadata: dict[str, Any] = {
@@ -96,12 +120,108 @@ class DoclingFileProcessor:
             "page_count": page_count,
             "extraction_method": "docling",
             "file_size_bytes": len(content),
+            "extracted_image_count": len(picture_file_ids),
         }
 
-        # Create chunks
-        chunks = self._create_chunks(doc, document_id, chunking_strategy, document_metadata)
-
         return ProcessFileResponse(chunks=chunks, metadata=response_metadata)
+
+    def _build_converter(self) -> Any:
+        """Construct a DocumentConverter, enabling per-picture image generation when configured.
+
+        Picture images are populated only when the underlying pipeline rasterises them. For PDFs
+        that means PdfPipelineOptions.generate_picture_images=True plus a non-trivial images_scale
+        — without these, PictureItem.get_image(doc) returns None and we have nothing to upload.
+        """
+        from docling.datamodel.base_models import InputFormat
+        from docling.datamodel.pipeline_options import PdfPipelineOptions
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+
+        if not self.config.extract_images:
+            return DocumentConverter()
+
+        pdf_pipeline = PdfPipelineOptions()
+        pdf_pipeline.images_scale = self.config.images_scale
+        pdf_pipeline.generate_picture_images = True
+
+        return DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_pipeline),
+            }
+        )
+
+    async def _extract_and_upload_pictures(self, doc: Any, filename: str) -> dict[str, str]:
+        """Walk the document, rasterise each picture, upload via Files API, return ref -> file_id."""
+        if not self.config.extract_images or self.files_api is None:
+            return {}
+
+        picture_file_ids: dict[str, str] = {}
+        base_name, _ = os.path.splitext(filename)
+        min_dim = self.config.min_image_dim_px
+
+        # iterate_items walks the doc tree; with_groups=False yields content items, traverse_pictures
+        # is irrelevant here since PictureItem nodes are visited at the top level by default.
+        for item, _level in doc.iterate_items():
+            if not isinstance(item, PictureItem):
+                continue
+
+            try:
+                pil_image = item.get_image(doc)
+            except Exception as e:
+                log.warning("Failed to render picture", picture_ref=item.self_ref, error=str(e))
+                continue
+
+            if pil_image is None:
+                continue
+
+            if pil_image.width < min_dim or pil_image.height < min_dim:
+                log.debug(
+                    "Skipping picture below min_image_dim_px",
+                    picture_ref=item.self_ref,
+                    width=pil_image.width,
+                    height=pil_image.height,
+                    min_dim=min_dim,
+                )
+                continue
+
+            buffer = io.BytesIO()
+            try:
+                pil_image.save(buffer, format="PNG")
+            except Exception as e:
+                log.warning("Failed to encode picture as PNG", picture_ref=item.self_ref, error=str(e))
+                continue
+
+            png_bytes = buffer.getvalue()
+
+            try:
+                file_obj = await self._upload_picture_bytes(png_bytes, base_name, item.self_ref)
+            except Exception as e:
+                log.warning("Failed to upload picture", picture_ref=item.self_ref, error=str(e))
+                continue
+
+            picture_file_ids[item.self_ref] = file_obj.id
+
+        log.info(
+            "Extracted document pictures",
+            filename=filename,
+            extracted_count=len(picture_file_ids),
+        )
+        return picture_file_ids
+
+    async def _upload_picture_bytes(self, png_bytes: bytes, base_name: str, picture_ref: str) -> Any:
+        """Upload PNG bytes to the Files API as an OpenAIFilePurpose.ASSISTANTS file."""
+        safe_ref = picture_ref.replace("#", "").replace("/", "_").strip("_")
+        upload_filename = f"{base_name}_{safe_ref}.png"
+
+        buffer = io.BytesIO(png_bytes)
+        upload = UploadFile(file=buffer, filename=upload_filename)
+        # The Starlette/FastAPI UploadFile reports content_type via its headers attribute; reading
+        # it back through self.content_type works on supported versions, but we don't rely on it
+        # — the Files API only needs the bytes.
+
+        return await self.files_api.openai_upload_file(
+            request=UploadFileRequest(purpose=OpenAIFilePurpose.ASSISTANTS),
+            file=upload,
+        )
 
     def _create_chunks(
         self,
@@ -109,6 +229,7 @@ class DoclingFileProcessor:
         document_id: str,
         chunking_strategy: VectorStoreChunkingStrategy | None,
         document_metadata: dict[str, Any],
+        picture_file_ids: dict[str, str],
     ) -> list[Chunk]:
         """Create chunks from a docling Document.
 
@@ -118,20 +239,25 @@ class DoclingFileProcessor:
         - chunking_strategy.type == "static" -> HybridChunker with provided max_tokens
         """
         if not chunking_strategy:
-            # No chunking - collect all text as a single chunk
+            # No chunking — collect all text as a single chunk. With nothing to match pictures
+            # against, every extracted picture is attached to the single chunk.
             text = doc.export_to_markdown()
             if not text or not text.strip():
                 return []
 
             chunk_id = generate_chunk_id(document_id, text)
+            metadata: dict[str, Any] = {
+                "document_id": document_id,
+                **document_metadata,
+            }
+            if picture_file_ids:
+                metadata[IMAGE_FILE_IDS_METADATA_KEY] = list(picture_file_ids.values())
+
             return [
                 Chunk(
                     content=text,
                     chunk_id=chunk_id,
-                    metadata={
-                        "document_id": document_id,
-                        **document_metadata,
-                    },
+                    metadata=metadata,
                     chunk_metadata=ChunkMetadata(
                         chunk_id=chunk_id,
                         document_id=document_id,
@@ -148,6 +274,9 @@ class DoclingFileProcessor:
             max_tokens = chunking_strategy.static.max_chunk_size_tokens
         else:
             max_tokens = self.config.default_chunk_size_tokens
+
+        from docling.chunking import HybridChunker
+        from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
 
         # max_tokens is set on the tokenizer, not on HybridChunker directly
         default_chunker = HybridChunker()
@@ -179,6 +308,10 @@ class DoclingFileProcessor:
             if headings:
                 meta["headings"] = headings
 
+            chunk_image_ids = self._collect_chunk_image_file_ids(doc_chunk, picture_file_ids)
+            if chunk_image_ids:
+                meta[IMAGE_FILE_IDS_METADATA_KEY] = chunk_image_ids
+
             chunks.append(
                 Chunk(
                     content=text,
@@ -195,6 +328,34 @@ class DoclingFileProcessor:
             )
 
         return chunks
+
+    @staticmethod
+    def _collect_chunk_image_file_ids(doc_chunk: Any, picture_file_ids: dict[str, str]) -> list[str]:
+        """Return the file_ids for any pictures referenced by this chunk's source doc_items.
+
+        Order is preserved by appearance in the chunk; duplicates are de-duped while keeping
+        first-seen order — important so callers can render images in the order they appear.
+        """
+        if not picture_file_ids:
+            return []
+
+        meta = getattr(doc_chunk, "meta", None)
+        doc_items = getattr(meta, "doc_items", None) if meta is not None else None
+        if not doc_items:
+            return []
+
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for source_item in doc_items:
+            ref = getattr(source_item, "self_ref", None)
+            if ref is None:
+                continue
+            file_id = picture_file_ids.get(ref)
+            if file_id is None or file_id in seen:
+                continue
+            seen.add(file_id)
+            ordered.append(file_id)
+        return ordered
 
     async def shutdown(self) -> None:
         pass
