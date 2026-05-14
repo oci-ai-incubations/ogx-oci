@@ -97,10 +97,16 @@ See [Docling's documentation](https://docling-project.github.io/docling/) for mo
 |-------|------|----------|---------|-------------|
 | `default_chunk_size_tokens` | `int` | No | 800 | Default chunk size in tokens when chunking_strategy type is 'auto' |
 | `default_chunk_overlap_tokens` | `int` | No | 400 | Default chunk overlap in tokens when chunking_strategy type is 'auto' |
+| `extract_images` | `bool` | No | True | Whether to extract embedded images (figures/pictures) from the source document, upload each via the Files API, and attach the resulting file_ids to the owning chunk's metadata under 'image_file_ids'. Requires a Files API binding. |
+| `images_scale` | `float` | No | 2.0 | Render scale passed to docling's PDF pipeline for picture/figure rasterisation. Higher values yield sharper extracted images at the cost of more processing time and larger uploaded file sizes. |
+| `min_image_dim_px` | `int` | No | 64 | Images with width or height below this threshold (in pixels) are skipped during extraction. Filters out spurious icons, bullet points, and decorative artefacts. |
 
 ## Sample Configuration
 
 ```yaml
 default_chunk_size_tokens: 800
 default_chunk_overlap_tokens: 400
+extract_images: true
+images_scale: 2.0
+min_image_dim_px: 64
 ```
