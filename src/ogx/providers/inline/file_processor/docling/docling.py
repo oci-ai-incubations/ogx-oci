@@ -9,7 +9,7 @@ import os
 import tempfile
 import time
 import uuid
-from typing import Any
+from typing import Any, NamedTuple
 
 from fastapi import UploadFile
 
@@ -42,6 +42,19 @@ log = get_logger(name=__name__, category="providers::file_processors")
 # of the multimodal RAG pipeline contract — Phase 2 work consumes this key during retrieval and
 # Phase 3 work folds the referenced images into the next chat completion as input_image parts.
 IMAGE_FILE_IDS_METADATA_KEY = "image_file_ids"
+
+
+class ExtractedPicture(NamedTuple):
+    """A picture rendered from the source document and uploaded to the Files API.
+
+    `pages` is the set of 1-indexed page numbers the picture appears on, taken from the
+    docling provenance entries. Chunks whose text overlaps any of these pages will pick the
+    picture up via `_collect_chunk_image_file_ids`.
+    """
+
+    picture_ref: str
+    file_id: str
+    pages: frozenset[int]
 
 
 class DoclingFileProcessor:
@@ -105,12 +118,12 @@ class DoclingFileProcessor:
         if file_id:
             document_metadata["file_id"] = file_id
 
-        # Extract and upload images before chunking so the picture_ref -> file_id map is ready
-        # when we walk chunk.meta.doc_items. Failures upload-side degrade gracefully: chunks are
-        # still produced with no image_file_ids.
-        picture_file_ids = await self._extract_and_upload_pictures(doc, filename=filename)
+        # Extract and upload images before chunking so the picture metadata is ready when we
+        # walk chunks. Failures upload-side degrade gracefully: chunks are still produced with
+        # no image_file_ids.
+        pictures = await self._extract_and_upload_pictures(doc, filename=filename)
 
-        chunks = self._create_chunks(doc, document_id, chunking_strategy, document_metadata, picture_file_ids)
+        chunks = self._create_chunks(doc, document_id, chunking_strategy, document_metadata, pictures)
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
@@ -120,7 +133,7 @@ class DoclingFileProcessor:
             "page_count": page_count,
             "extraction_method": "docling",
             "file_size_bytes": len(content),
-            "extracted_image_count": len(picture_file_ids),
+            "extracted_image_count": len(pictures),
         }
 
         return ProcessFileResponse(chunks=chunks, metadata=response_metadata)
@@ -155,12 +168,16 @@ class DoclingFileProcessor:
             }
         )
 
-    async def _extract_and_upload_pictures(self, doc: Any, filename: str) -> dict[str, str]:
-        """Walk the document, rasterise each picture, upload via Files API, return ref -> file_id."""
-        if not self.config.extract_images or self.files_api is None:
-            return {}
+    async def _extract_and_upload_pictures(self, doc: Any, filename: str) -> list[ExtractedPicture]:
+        """Walk the document, rasterise each picture, upload via Files API.
 
-        picture_file_ids: dict[str, str] = {}
+        Returns the extracted pictures in document iteration order, each carrying its uploaded
+        file_id and the set of page numbers it appears on (for chunk-locality matching downstream).
+        """
+        if not self.config.extract_images or self.files_api is None:
+            return []
+
+        pictures: list[ExtractedPicture] = []
         base_name, _ = os.path.splitext(filename)
         min_dim = self.config.min_image_dim_px
 
@@ -204,14 +221,15 @@ class DoclingFileProcessor:
                 log.warning("Failed to upload picture", picture_ref=item.self_ref, error=str(e))
                 continue
 
-            picture_file_ids[item.self_ref] = file_obj.id
+            pages = frozenset(_pages_for_item(item))
+            pictures.append(ExtractedPicture(picture_ref=item.self_ref, file_id=file_obj.id, pages=pages))
 
         log.info(
             "Extracted document pictures",
             filename=filename,
-            extracted_count=len(picture_file_ids),
+            extracted_count=len(pictures),
         )
-        return picture_file_ids
+        return pictures
 
     async def _upload_picture_bytes(self, png_bytes: bytes, base_name: str, picture_ref: str) -> Any:
         """Upload PNG bytes to the Files API as an OpenAIFilePurpose.ASSISTANTS file."""
@@ -235,7 +253,7 @@ class DoclingFileProcessor:
         document_id: str,
         chunking_strategy: VectorStoreChunkingStrategy | None,
         document_metadata: dict[str, Any],
-        picture_file_ids: dict[str, str],
+        pictures: list[ExtractedPicture],
     ) -> list[Chunk]:
         """Create chunks from a docling Document.
 
@@ -256,8 +274,8 @@ class DoclingFileProcessor:
                 "document_id": document_id,
                 **document_metadata,
             }
-            if picture_file_ids:
-                metadata[IMAGE_FILE_IDS_METADATA_KEY] = list(picture_file_ids.values())
+            if pictures:
+                metadata[IMAGE_FILE_IDS_METADATA_KEY] = [p.file_id for p in pictures]
 
             return [
                 Chunk(
@@ -314,7 +332,7 @@ class DoclingFileProcessor:
             if headings:
                 meta["headings"] = headings
 
-            chunk_image_ids = self._collect_chunk_image_file_ids(doc_chunk, picture_file_ids)
+            chunk_image_ids = self._collect_chunk_image_file_ids(doc_chunk, pictures)
             if chunk_image_ids:
                 meta[IMAGE_FILE_IDS_METADATA_KEY] = chunk_image_ids
 
@@ -336,13 +354,17 @@ class DoclingFileProcessor:
         return chunks
 
     @staticmethod
-    def _collect_chunk_image_file_ids(doc_chunk: Any, picture_file_ids: dict[str, str]) -> list[str]:
-        """Return the file_ids for any pictures referenced by this chunk's source doc_items.
+    def _collect_chunk_image_file_ids(doc_chunk: Any, pictures: list[ExtractedPicture]) -> list[str]:
+        """Return the file_ids of pictures whose pages overlap this chunk's text.
 
-        Order is preserved by appearance in the chunk; duplicates are de-duped while keeping
-        first-seen order — important so callers can render images in the order they appear.
+        HybridChunker emits chunks containing only TextItem refs in `meta.doc_items` — never
+        PictureItem refs — so matching by `self_ref` produces no hits. Instead we compute the
+        set of pages spanned by the chunk's text items (via their `prov[*].page_no`) and pick
+        the pictures whose page set intersects. Pictures are returned in document order (the
+        order they were extracted by `_extract_and_upload_pictures`); duplicates within a chunk
+        are not possible because each picture appears once in the list.
         """
-        if not picture_file_ids:
+        if not pictures:
             return []
 
         meta = getattr(doc_chunk, "meta", None)
@@ -350,18 +372,26 @@ class DoclingFileProcessor:
         if not doc_items:
             return []
 
-        seen: set[str] = set()
-        ordered: list[str] = []
+        chunk_pages: set[int] = set()
         for source_item in doc_items:
-            ref = getattr(source_item, "self_ref", None)
-            if ref is None:
-                continue
-            file_id = picture_file_ids.get(ref)
-            if file_id is None or file_id in seen:
-                continue
-            seen.add(file_id)
-            ordered.append(file_id)
-        return ordered
+            chunk_pages.update(_pages_for_item(source_item))
+        if not chunk_pages:
+            return []
+
+        return [p.file_id for p in pictures if p.pages & chunk_pages]
 
     async def shutdown(self) -> None:
         pass
+
+
+def _pages_for_item(item: Any) -> list[int]:
+    """Extract page_no values from a docling item's prov entries. Tolerates missing fields."""
+    prov = getattr(item, "prov", None)
+    if not prov:
+        return []
+    pages: list[int] = []
+    for entry in prov:
+        page_no = getattr(entry, "page_no", None)
+        if isinstance(page_no, int):
+            pages.append(page_no)
+    return pages
