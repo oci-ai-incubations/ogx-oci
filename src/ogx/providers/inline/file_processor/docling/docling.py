@@ -43,6 +43,11 @@ log = get_logger(name=__name__, category="providers::file_processors")
 # Phase 3 work folds the referenced images into the next chat completion as input_image parts.
 IMAGE_FILE_IDS_METADATA_KEY = "image_file_ids"
 
+# Response-level (ProcessFileResponse.metadata) key carrying the full union of file_ids the
+# processor uploaded while parsing the document. The vector-store mixin reads it when persisting
+# a vector_store_file so that subsequent deletion can cascade cleanup of the extracted images.
+EXTRACTED_IMAGE_FILE_IDS_METADATA_KEY = "extracted_image_file_ids"
+
 
 class ExtractedPicture(NamedTuple):
     """A picture rendered from the source document and uploaded to the Files API.
@@ -134,6 +139,10 @@ class DoclingFileProcessor:
             "extraction_method": "docling",
             "file_size_bytes": len(content),
             "extracted_image_count": len(pictures),
+            # Full list of uploaded image file_ids — consumers (vector_store mixin) use this to
+            # tie the lifetime of the extracted images to the parent file, so deletion of the
+            # parent vector_store_file cascades cleanup of the children.
+            EXTRACTED_IMAGE_FILE_IDS_METADATA_KEY: [p.file_id for p in pictures],
         }
 
         return ProcessFileResponse(chunks=chunks, metadata=response_metadata)
