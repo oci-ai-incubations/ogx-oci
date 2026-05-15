@@ -142,6 +142,12 @@ class DoclingFileProcessor:
         pdf_pipeline = PdfPipelineOptions()
         pdf_pipeline.images_scale = self.config.images_scale
         pdf_pipeline.generate_picture_images = True
+        # The table-structure and OCR pipelines pull heavy ML models (TableFormer,
+        # EasyOCR/Tesseract) whose transitive deps include OpenCV → libxcb.so.1, which is not
+        # present in the slim OGX runtime image. Phase 1 only needs picture extraction;
+        # disabling these keeps initialisation cheap and side-steps the missing X11 lib.
+        pdf_pipeline.do_table_structure = False
+        pdf_pipeline.do_ocr = False
 
         return DocumentConverter(
             format_options={
