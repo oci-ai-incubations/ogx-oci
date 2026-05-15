@@ -64,9 +64,10 @@ class AutoFileProcessor:
     rejected with a 422 error listing the supported types.
     """
 
-    def __init__(self, config: AutoFileProcessorConfig, files_api) -> None:
+    def __init__(self, config: AutoFileProcessorConfig, files_api, inference_api=None) -> None:
         self.config = config
         self.files_api = files_api
+        self.inference_api = inference_api
 
         pypdf_config = PyPDFFileProcessorConfig(
             default_chunk_size_tokens=config.default_chunk_size_tokens,
@@ -84,6 +85,8 @@ class AutoFileProcessor:
 
         # Lazily-instantiated docling backend — only constructed when prefer_docling_for_pdfs
         # is enabled, so deployments not opting in pay no startup cost for the heavy converter.
+        # When constructed, the same instance handles both PDFs and image MIMEs (PNG/JPG), since
+        # docling treats a standalone image as a 1-page document with a single PictureItem.
         self.docling: DoclingFileProcessor | None = None
         if config.prefer_docling_for_pdfs:
             docling_config = DoclingFileProcessorConfig(
@@ -92,8 +95,10 @@ class AutoFileProcessor:
                 extract_images=config.docling_extract_images,
                 images_scale=config.docling_images_scale,
                 min_image_dim_px=config.docling_min_image_dim_px,
+                caption_images=config.docling_caption_images,
+                caption_model=config.docling_caption_model,
             )
-            self.docling = DoclingFileProcessor(docling_config, files_api)
+            self.docling = DoclingFileProcessor(docling_config, files_api=files_api, inference_api=inference_api)
 
     async def process_file(
         self,
@@ -104,7 +109,7 @@ class AutoFileProcessor:
         mime_type, _ = mimetypes.guess_type(filename)
         mime_category = mime_type.split("/")[0] if (mime_type and "/" in mime_type) else None
 
-        if mime_type == "application/pdf" and self.docling is not None:
+        if self.docling is not None and (mime_type == "application/pdf" or mime_category == "image"):
             return await self.docling.process_file(request=request, file=file)
 
         if mime_type == "application/pdf" or mime_category == "text":

@@ -53,6 +53,46 @@ class DoclingFileProcessorConfig(BaseModel):
             "extraction. Filters out spurious icons, bullet points, and decorative artefacts."
         ),
     )
+    caption_images: bool = Field(
+        default=False,
+        description=(
+            "When True, every extracted picture is captioned by calling the configured vision "
+            "model (caption_model) through the bound Inference API. The caption is stored on "
+            "the ExtractedPicture and used as the text body of synthetic chunks emitted for "
+            "image-only inputs (PNG/JPG uploaded directly), making them retrievable via "
+            "semantic search instead of only by filename. Off by default — each caption "
+            "incurs one vision-model call per picture at ingest time."
+        ),
+    )
+    caption_model: str | None = Field(
+        default=None,
+        description=(
+            "Identifier of the vision-capable model used for captioning. Must be configured "
+            "when caption_images is True; ignored otherwise. Example: "
+            "'oci/meta.llama-3.2-90b-vision-instruct'."
+        ),
+    )
+    caption_prompt: str = Field(
+        default=(
+            "Describe this image in 1-2 sentences. Focus on factual content — visible objects, "
+            "people, text, layout, setting. Avoid aesthetic adjectives. Output the description "
+            "directly with no preamble."
+        ),
+        description=(
+            "Prompt sent alongside each picture to the captioning model. Tune for shorter or "
+            "longer captions, or to bias toward specific facets (text-in-image OCR, scene "
+            "description, technical diagrams, etc.)."
+        ),
+    )
+    caption_max_tokens: int = Field(
+        default=180,
+        ge=16,
+        le=2048,
+        description=(
+            "Upper bound on caption length in tokens. Kept small by default since captions are "
+            "embedded as chunk text and longer captions dilute retrieval signal."
+        ),
+    )
 
     @classmethod
     def sample_run_config(cls, **kwargs: Any) -> dict[str, Any]:
@@ -62,4 +102,7 @@ class DoclingFileProcessorConfig(BaseModel):
             "extract_images": True,
             "images_scale": 2.0,
             "min_image_dim_px": 64,
+            "caption_images": False,
+            "caption_model": None,
+            "caption_max_tokens": 180,
         }

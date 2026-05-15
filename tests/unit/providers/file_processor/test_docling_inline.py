@@ -311,3 +311,99 @@ class TestCreateChunksNoStrategy:
 # images_scale and generate_picture_images=True. Mocking that import chain without installing
 # docling proper (which pulls torch / huggingface) would obscure rather than verify behaviour;
 # the wiring is exercised end-to-end by the integration test suite under tests/integration.
+
+
+class TestMaybeCaptionPicture:
+    """Vision-model captioning is opt-in and degrades gracefully on any error."""
+
+    async def test_returns_none_when_caption_images_disabled(self) -> None:
+        processor = DoclingFileProcessor(DoclingFileProcessorConfig(caption_images=False), inference_api=AsyncMock())
+        assert await processor._maybe_caption_picture(b"\x89PNG", picture_ref="#/pictures/0") is None
+
+    async def test_returns_none_when_inference_api_missing(self) -> None:
+        cfg = DoclingFileProcessorConfig(caption_images=True, caption_model="vl-model")
+        processor = DoclingFileProcessor(cfg, inference_api=None)
+        assert await processor._maybe_caption_picture(b"\x89PNG", picture_ref="#/pictures/0") is None
+
+    async def test_returns_none_when_model_unset(self) -> None:
+        cfg = DoclingFileProcessorConfig(caption_images=True)  # caption_model is None
+        processor = DoclingFileProcessor(cfg, inference_api=AsyncMock())
+        assert await processor._maybe_caption_picture(b"\x89PNG", picture_ref="#/pictures/0") is None
+
+    async def test_returns_caption_from_chat_completion(self) -> None:
+        cfg = DoclingFileProcessorConfig(caption_images=True, caption_model="vl-model")
+        inference = AsyncMock()
+        inference.openai_chat_completion = AsyncMock(
+            return_value=SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="A red race car."))])
+        )
+        processor = DoclingFileProcessor(cfg, inference_api=inference)
+
+        result = await processor._maybe_caption_picture(b"\x89PNG\r\n\x1a\n", picture_ref="#/pictures/0")
+
+        assert result == "A red race car."
+        sent = inference.openai_chat_completion.await_args.args[0]
+        assert sent.model == "vl-model"
+        # Caption call carries both the prompt text and an image_url part
+        content = sent.messages[0].content
+        types = [getattr(p, "type", None) for p in content]
+        assert "text" in types and "image_url" in types
+        # data URL contains base64 of the bytes
+        image_part = next(p for p in content if getattr(p, "type", None) == "image_url")
+        assert image_part.image_url.url.startswith("data:image/png;base64,")
+
+    async def test_tolerates_inference_failure(self) -> None:
+        cfg = DoclingFileProcessorConfig(caption_images=True, caption_model="vl-model")
+        inference = AsyncMock()
+        inference.openai_chat_completion = AsyncMock(side_effect=RuntimeError("vision endpoint 503"))
+        processor = DoclingFileProcessor(cfg, inference_api=inference)
+        assert await processor._maybe_caption_picture(b"\x89PNG", picture_ref="#/pictures/0") is None
+
+    async def test_returns_none_on_empty_choices(self) -> None:
+        cfg = DoclingFileProcessorConfig(caption_images=True, caption_model="vl-model")
+        inference = AsyncMock()
+        inference.openai_chat_completion = AsyncMock(return_value=SimpleNamespace(choices=[]))
+        processor = DoclingFileProcessor(cfg, inference_api=inference)
+        assert await processor._maybe_caption_picture(b"\x89PNG", picture_ref="#/pictures/0") is None
+
+
+class TestImageOnlyFallbackChunks:
+    """When HybridChunker produces 0 text chunks, fall back to one chunk per picture."""
+
+    def test_emits_one_chunk_per_picture_with_caption(self) -> None:
+        chunks = DoclingFileProcessor._build_image_only_chunks(
+            document_id="doc-1",
+            document_metadata={"filename": "1.jpg"},
+            pictures=[
+                ExtractedPicture("#/pictures/0", "file-a", frozenset({1}), caption="A turbocharger."),
+                ExtractedPicture("#/pictures/1", "file-b", frozenset({1}), caption=None),
+            ],
+        )
+
+        assert len(chunks) == 2
+        # First chunk uses the caption as its body
+        assert chunks[0].content == "A turbocharger."
+        assert chunks[0].metadata[IMAGE_FILE_IDS_METADATA_KEY] == ["file-a"]
+        # Second chunk has no caption — falls back to a filename-based label
+        assert chunks[1].content == "Image: 1.jpg"
+        assert chunks[1].metadata[IMAGE_FILE_IDS_METADATA_KEY] == ["file-b"]
+        # Each chunk records the picture index in chunk_window so callers can correlate
+        assert chunks[0].chunk_metadata.chunk_window == "image-0"
+        assert chunks[1].chunk_metadata.chunk_window == "image-1"
+
+    def test_falls_back_to_generic_image_label_when_no_filename(self) -> None:
+        chunks = DoclingFileProcessor._build_image_only_chunks(
+            document_id="doc-1",
+            document_metadata={},
+            pictures=[ExtractedPicture("#/pictures/0", "file-a", frozenset({1}), caption=None)],
+        )
+        assert chunks[0].content == "Image"
+
+    def test_empty_picture_list_yields_no_chunks(self) -> None:
+        assert (
+            DoclingFileProcessor._build_image_only_chunks(
+                document_id="doc-1",
+                document_metadata={"filename": "1.jpg"},
+                pictures=[],
+            )
+            == []
+        )

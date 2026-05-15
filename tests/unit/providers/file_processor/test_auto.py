@@ -192,3 +192,49 @@ async def test_text_files_still_route_to_pypdf_when_docling_flag_on():
     assert result is sentinel_response
     proc.pypdf.process_file.assert_awaited_once()
     proc.docling.process_file.assert_not_awaited()
+
+
+async def test_image_routes_to_docling_when_flag_on():
+    config = AutoFileProcessorConfig(prefer_docling_for_pdfs=True)
+    proc = AutoFileProcessor(config, MagicMock())
+
+    sentinel = MagicMock()
+    proc.docling.process_file = AsyncMock(return_value=sentinel)
+    proc.markitdown.process_file = AsyncMock(return_value=MagicMock())  # should not be called
+
+    file = UploadFile(filename="photo.jpg", file=io.BytesIO(b"\xff\xd8\xff"))  # JPEG SOI
+    result = await proc.process_file(ProcessFileRequest(), file=file)
+
+    assert result is sentinel
+    proc.docling.process_file.assert_awaited_once()
+    proc.markitdown.process_file.assert_not_awaited()
+
+
+async def test_image_still_goes_to_markitdown_when_flag_off():
+    # Existing deployments that haven't opted in get the previous behaviour for images.
+    proc = AutoFileProcessor(AutoFileProcessorConfig(), MagicMock())
+    sentinel = MagicMock()
+    proc.markitdown.process_file = AsyncMock(return_value=sentinel)
+
+    file = UploadFile(filename="photo.png", file=io.BytesIO(b"\x89PNG\r\n\x1a\n"))
+    result = await proc.process_file(ProcessFileRequest(), file=file)
+
+    assert result is sentinel
+    proc.markitdown.process_file.assert_awaited_once()
+
+
+async def test_inference_api_threaded_into_docling_when_caption_enabled():
+    config = AutoFileProcessorConfig(
+        prefer_docling_for_pdfs=True,
+        docling_caption_images=True,
+        docling_caption_model="vl-model",
+    )
+    files_api = MagicMock()
+    inference_api = MagicMock()
+
+    proc = AutoFileProcessor(config, files_api, inference_api=inference_api)
+
+    assert proc.docling is not None
+    assert proc.docling.inference_api is inference_api
+    assert proc.docling.config.caption_images is True
+    assert proc.docling.config.caption_model == "vl-model"

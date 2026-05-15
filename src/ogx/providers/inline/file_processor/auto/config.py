@@ -75,6 +75,24 @@ class AutoFileProcessorConfig(BaseModel):
             "width or height (in pixels) are skipped during extraction."
         ),
     )
+    docling_caption_images: bool = Field(
+        default=False,
+        description=(
+            "Only consulted when prefer_docling_for_pdfs is True. When enabled, every "
+            "extracted picture is captioned by a vision-capable model (docling_caption_model). "
+            "The caption is what makes standalone-image uploads (PNG/JPG) retrievable via "
+            "semantic search; without it those chunks carry only filename text. Each picture "
+            "incurs one vision-model call at ingest time."
+        ),
+    )
+    docling_caption_model: str | None = Field(
+        default=None,
+        description=(
+            "Only consulted when docling_caption_images is True. Model identifier passed to "
+            "the Inference API. Must be a vision-capable model; example: "
+            "'oci/meta.llama-3.2-90b-vision-instruct'."
+        ),
+    )
 
     @classmethod
     def sample_run_config(cls, **kwargs: Any) -> dict[str, Any]:

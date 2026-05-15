@@ -4,6 +4,7 @@
 # This source code is licensed under the terms described in the LICENSE file in
 # the root directory of this source tree.
 
+import base64
 import io
 import os
 import tempfile
@@ -55,11 +56,16 @@ class ExtractedPicture(NamedTuple):
     `pages` is the set of 1-indexed page numbers the picture appears on, taken from the
     docling provenance entries. Chunks whose text overlaps any of these pages will pick the
     picture up via `_collect_chunk_image_file_ids`.
+
+    `caption` is populated only when caption_images is enabled on the config; otherwise it is
+    None. For image-only inputs (PNG/JPG uploaded directly), the caption is what makes the
+    chunk's text content semantically meaningful — without it the chunker has nothing to embed.
     """
 
     picture_ref: str
     file_id: str
     pages: frozenset[int]
+    caption: str | None = None
 
 
 class DoclingFileProcessor:
@@ -71,9 +77,15 @@ class DoclingFileProcessor:
     file_id is appended to the owning chunk's metadata under `image_file_ids`.
     """
 
-    def __init__(self, config: DoclingFileProcessorConfig, files_api: Any | None = None) -> None:
+    def __init__(
+        self,
+        config: DoclingFileProcessorConfig,
+        files_api: Any | None = None,
+        inference_api: Any | None = None,
+    ) -> None:
         self.config = config
         self.files_api = files_api
+        self.inference_api = inference_api
 
     async def process_file(
         self,
@@ -231,7 +243,15 @@ class DoclingFileProcessor:
                 continue
 
             pages = frozenset(_pages_for_item(item))
-            pictures.append(ExtractedPicture(picture_ref=item.self_ref, file_id=file_obj.id, pages=pages))
+            caption = await self._maybe_caption_picture(png_bytes, picture_ref=item.self_ref)
+            pictures.append(
+                ExtractedPicture(
+                    picture_ref=item.self_ref,
+                    file_id=file_obj.id,
+                    pages=pages,
+                    caption=caption,
+                )
+            )
 
         log.info(
             "Extracted document pictures",
@@ -255,6 +275,72 @@ class DoclingFileProcessor:
             request=UploadFileRequest(purpose=OpenAIFilePurpose.ASSISTANTS),
             file=upload,
         )
+
+    async def _maybe_caption_picture(self, png_bytes: bytes, picture_ref: str) -> str | None:
+        """Call the configured vision model to caption a picture.
+
+        Returns the caption text on success, or None if captioning is disabled, the inference
+        API isn't wired in, the configured model is unset, or the call fails. Failures are
+        logged at warning level — caption-generation is best-effort and must not block the rest
+        of ingest from succeeding.
+        """
+        if not self.config.caption_images:
+            return None
+        if self.inference_api is None:
+            log.debug("caption_images=True but Inference API not bound; skipping caption")
+            return None
+        model_id = self.config.caption_model
+        if not model_id:
+            log.warning(
+                "caption_images=True but caption_model is unset; skipping caption",
+                picture_ref=picture_ref,
+            )
+            return None
+
+        # Lazy import to keep module-load cheap when captioning isn't used.
+        from ogx_api.inference.models import (
+            OpenAIChatCompletionContentPartImageParam,
+            OpenAIChatCompletionContentPartTextParam,
+            OpenAIChatCompletionRequestWithExtraBody,
+            OpenAIImageURL,
+            OpenAIUserMessageParam,
+        )
+
+        data_url = f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}"
+        params = OpenAIChatCompletionRequestWithExtraBody(
+            model=model_id,
+            messages=[
+                OpenAIUserMessageParam(
+                    content=[
+                        OpenAIChatCompletionContentPartTextParam(text=self.config.caption_prompt),
+                        OpenAIChatCompletionContentPartImageParam(image_url=OpenAIImageURL(url=data_url)),
+                    ]
+                )
+            ],
+            max_tokens=self.config.caption_max_tokens,
+            stream=False,
+        )
+
+        try:
+            resp = await self.inference_api.openai_chat_completion(params)
+        except Exception as e:
+            log.warning(
+                "Failed to caption picture",
+                picture_ref=picture_ref,
+                model=model_id,
+                error=str(e),
+            )
+            return None
+
+        choices = getattr(resp, "choices", None) or []
+        if not choices:
+            return None
+        message = getattr(choices[0], "message", None)
+        content = getattr(message, "content", None) if message is not None else None
+        if isinstance(content, str):
+            caption = content.strip()
+            return caption or None
+        return None
 
     def _create_chunks(
         self,
@@ -320,9 +406,6 @@ class DoclingFileProcessor:
         chunker = HybridChunker(tokenizer=tokenizer)
         doc_chunks = list(chunker.chunk(doc))
 
-        if not doc_chunks:
-            return []
-
         chunks: list[Chunk] = []
         for i, doc_chunk in enumerate(doc_chunks):
             text = doc_chunk.text
@@ -360,6 +443,57 @@ class DoclingFileProcessor:
                 )
             )
 
+        # Image-only inputs (PNG/JPG, OCR-disabled PDFs of pure imagery) produce no text chunks
+        # from HybridChunker. Fall back to emitting one chunk per extracted picture so the file
+        # has a retrievable presence in the vector store.
+        if not chunks and pictures:
+            chunks.extend(self._build_image_only_chunks(document_id, document_metadata, pictures))
+
+        return chunks
+
+    @staticmethod
+    def _build_image_only_chunks(
+        document_id: str,
+        document_metadata: dict[str, Any],
+        pictures: list[ExtractedPicture],
+    ) -> list[Chunk]:
+        """Emit one chunk per picture for documents that produced no text chunks.
+
+        Used as a fallback path so standalone-image uploads (PNG/JPG) still result in
+        retrievable vector store entries. Caption text — when available — is what makes the
+        chunk semantically searchable; without it the body falls back to the filename so the
+        chunk is at least findable by document identity.
+        """
+        filename = document_metadata.get("filename", "")
+        chunks: list[Chunk] = []
+        for i, picture in enumerate(pictures):
+            if picture.caption:
+                text_body = picture.caption
+            elif filename:
+                text_body = f"Image: {filename}"
+            else:
+                text_body = "Image"
+            chunk_window = f"image-{i}"
+            chunk_id = generate_chunk_id(document_id, text_body, chunk_window)
+            meta: dict[str, Any] = {
+                "document_id": document_id,
+                **document_metadata,
+                IMAGE_FILE_IDS_METADATA_KEY: [picture.file_id],
+            }
+            chunks.append(
+                Chunk(
+                    content=text_body,
+                    chunk_id=chunk_id,
+                    metadata=meta,
+                    chunk_metadata=ChunkMetadata(
+                        chunk_id=chunk_id,
+                        document_id=document_id,
+                        source=filename,
+                        content_token_count=len(text_body.split()),
+                        chunk_window=chunk_window,
+                    ),
+                )
+            )
         return chunks
 
     @staticmethod

@@ -22,6 +22,8 @@ Composite file processor that automatically dispatches to the appropriate backen
 | `docling_extract_images` | `bool` | No | True | Only consulted when prefer_docling_for_pdfs is True. Whether the docling backend should extract and upload embedded pictures to the Files API. See DoclingFileProcessorConfig.extract_images for details. |
 | `docling_images_scale` | `float` | No | 2.0 | Only consulted when prefer_docling_for_pdfs is True. Render scale passed to docling's PDF pipeline for picture rasterisation. |
 | `docling_min_image_dim_px` | `int` | No | 64 | Only consulted when prefer_docling_for_pdfs is True. Images smaller than this width or height (in pixels) are skipped during extraction. |
+| `docling_caption_images` | `bool` | No | False | Only consulted when prefer_docling_for_pdfs is True. When enabled, every extracted picture is captioned by a vision-capable model (docling_caption_model). The caption is what makes standalone-image uploads (PNG/JPG) retrievable via semantic search; without it those chunks carry only filename text. Each picture incurs one vision-model call at ingest time. |
+| `docling_caption_model` | `str \| None` | No |  | Only consulted when docling_caption_images is True. Model identifier passed to the Inference API. Must be a vision-capable model; example: 'oci/meta.llama-3.2-90b-vision-instruct'. |
 
 ## Sample Configuration
 
