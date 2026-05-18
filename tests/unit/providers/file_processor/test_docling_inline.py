@@ -290,7 +290,7 @@ class TestCreateChunksNoStrategy:
         assert len(chunks) == 1
         assert IMAGE_FILE_IDS_METADATA_KEY not in chunks[0].metadata
 
-    def test_returns_empty_for_blank_doc(self) -> None:
+    def test_returns_empty_for_blank_doc_with_no_pictures(self) -> None:
         cfg = DoclingFileProcessorConfig(extract_images=True)
         processor = DoclingFileProcessor(cfg, files_api=AsyncMock())
         doc = SimpleNamespace(export_to_markdown=lambda: "   ")
@@ -300,10 +300,28 @@ class TestCreateChunksNoStrategy:
             document_id="doc-1",
             chunking_strategy=None,
             document_metadata={"filename": "x.pdf"},
-            pictures=[ExtractedPicture("#/pictures/0", "file-a", frozenset({1}))],
+            pictures=[],
         )
 
         assert chunks == []
+
+    def test_blank_doc_with_pictures_emits_image_only_fallback_chunks(self) -> None:
+        """Mirror the chunker branch: blank doc + pictures should fall back to per-picture chunks."""
+        cfg = DoclingFileProcessorConfig(extract_images=True)
+        processor = DoclingFileProcessor(cfg, files_api=AsyncMock())
+        doc = SimpleNamespace(export_to_markdown=lambda: "   ")
+
+        chunks = processor._create_chunks(
+            doc=doc,
+            document_id="doc-1",
+            chunking_strategy=None,
+            document_metadata={"filename": "11.jpg"},
+            pictures=[ExtractedPicture("self", "file-src", frozenset({1}), caption=None)],
+        )
+
+        assert len(chunks) == 1
+        assert chunks[0].content == "Image: 11.jpg"
+        assert chunks[0].metadata[IMAGE_FILE_IDS_METADATA_KEY] == ["file-src"]
 
 
 # NOTE: _build_converter wiring is intentionally not unit-tested here. It does lazy imports of
@@ -407,3 +425,96 @@ class TestImageOnlyFallbackChunks:
             )
             == []
         )
+
+
+class TestIsImageInputFilename:
+    """Filename-suffix gate for the self-picture synthesis path."""
+
+    @pytest.mark.parametrize(
+        "name",
+        ["1.jpg", "photo.JPEG", "diagram.png", "chart.WebP", "anim.gif", "scan.tiff", "scan.tif"],
+    )
+    def test_recognises_image_suffixes(self, name: str) -> None:
+        from ogx.providers.inline.file_processor.docling.docling import _is_image_input_filename
+
+        assert _is_image_input_filename(name) is True
+
+    @pytest.mark.parametrize("name", ["report.pdf", "notes.txt", "deck.pptx", "no-extension", ""])
+    def test_rejects_non_image_suffixes(self, name: str) -> None:
+        from ogx.providers.inline.file_processor.docling.docling import _is_image_input_filename
+
+        assert _is_image_input_filename(name) is False
+
+
+class TestBuildSelfPicture:
+    """Synthesise an ExtractedPicture for standalone-image inputs.
+
+    The bytes are already stored in the Files API under the source file_id, so the synthesis
+    must NOT re-upload — it should reuse the id and only attempt a (best-effort) caption.
+    """
+
+    async def test_reuses_source_file_id_and_no_caption_when_disabled(self) -> None:
+        cfg = DoclingFileProcessorConfig(caption_images=False)
+        processor = DoclingFileProcessor(cfg, files_api=AsyncMock(), inference_api=AsyncMock())
+
+        picture = await processor._build_self_picture(content=b"\xff\xd8\xff", file_id="file-src")
+
+        assert picture is not None
+        assert picture.file_id == "file-src"
+        assert picture.picture_ref == "self"
+        assert picture.pages == frozenset({1})
+        assert picture.caption is None
+        # No upload happened: files_api was never called
+        processor.files_api.openai_upload_file.assert_not_called()
+
+    async def test_captions_via_inference_when_enabled(self) -> None:
+        cfg = DoclingFileProcessorConfig(caption_images=True, caption_model="vl-model")
+        inference = AsyncMock()
+        inference.openai_chat_completion = AsyncMock(
+            return_value=SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="A red turbocharger."))]
+            )
+        )
+        processor = DoclingFileProcessor(cfg, files_api=AsyncMock(), inference_api=inference)
+
+        picture = await processor._build_self_picture(content=b"\xff\xd8\xff", file_id="file-src")
+
+        assert picture is not None
+        assert picture.caption == "A red turbocharger."
+        assert picture.file_id == "file-src"
+
+
+class TestProcessFileImageSelfPictureFallback:
+    """End-to-end: process_file on a standalone image must synthesise a self-picture and
+    produce one fallback chunk instead of returning [] and raising "No chunks were generated"."""
+
+    async def test_standalone_image_with_no_picture_items_emits_one_chunk(self) -> None:
+        from ogx_api.file_processors import ProcessFileRequest
+
+        cfg = DoclingFileProcessorConfig(caption_images=False)
+
+        files_api = AsyncMock()
+        files_api.openai_retrieve_file = AsyncMock(return_value=SimpleNamespace(filename="11.jpg"))
+        files_api.openai_retrieve_file_content = AsyncMock(return_value=SimpleNamespace(body=b"\xff\xd8\xff\xe0jpeg"))
+
+        processor = DoclingFileProcessor(cfg, files_api=files_api, inference_api=None)
+
+        # Docling sees an image with no embedded PictureItems — iterate_items returns nothing.
+        empty_doc = SimpleNamespace(
+            iterate_items=lambda: [],
+            num_pages=lambda: 1,
+            export_to_markdown=lambda: "",
+        )
+        fake_result = SimpleNamespace(document=empty_doc)
+        fake_converter = SimpleNamespace(convert=lambda _path: fake_result)
+
+        with patch.object(processor, "_build_converter", return_value=fake_converter):
+            response = await processor.process_file(
+                ProcessFileRequest(file_id="file-src", chunking_strategy=None),
+                file=None,
+            )
+
+        assert len(response.chunks) == 1
+        # Caption disabled and no caption available — fallback body is the filename label
+        assert response.chunks[0].content == "Image: 11.jpg"
+        assert response.chunks[0].metadata[IMAGE_FILE_IDS_METADATA_KEY] == ["file-src"]

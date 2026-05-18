@@ -49,6 +49,13 @@ IMAGE_FILE_IDS_METADATA_KEY = "image_file_ids"
 # a vector_store_file so that subsequent deletion can cascade cleanup of the extracted images.
 EXTRACTED_IMAGE_FILE_IDS_METADATA_KEY = "extracted_image_file_ids"
 
+# Filename suffixes that docling routes through InputFormat.IMAGE. A standalone image of any of
+# these types is treated by docling as the document itself rather than an embedded picture, so
+# `iterate_items` yields no PictureItem and the regular extraction path returns []. We special-
+# case this in process_file by synthesising a self-picture so the image-only fallback chunk path
+# can still produce a retrievable entry.
+_IMAGE_INPUT_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif"})
+
 
 class ExtractedPicture(NamedTuple):
     """A picture rendered from the source document and uploaded to the Files API.
@@ -139,6 +146,15 @@ class DoclingFileProcessor:
         # walk chunks. Failures upload-side degrade gracefully: chunks are still produced with
         # no image_file_ids.
         pictures = await self._extract_and_upload_pictures(doc, filename=filename)
+
+        # Standalone image uploads (PNG/JPG) don't surface as PictureItem nodes — docling treats
+        # the whole image as the document page, so iterate_items yields nothing. Synthesise a
+        # self-picture from the source file so the image-only fallback chunk path can produce a
+        # captioned (or filename-labelled) entry instead of failing with "No chunks were generated".
+        if not pictures and file_id and _is_image_input_filename(filename):
+            self_picture = await self._build_self_picture(content=content, file_id=file_id)
+            if self_picture is not None:
+                pictures = [self_picture]
 
         chunks = self._create_chunks(doc, document_id, chunking_strategy, document_metadata, pictures)
 
@@ -264,6 +280,21 @@ class DoclingFileProcessor:
         )
         return pictures
 
+    async def _build_self_picture(self, content: bytes, file_id: str) -> ExtractedPicture | None:
+        """Build an ExtractedPicture representing the input file when the input is itself an image.
+
+        The source bytes are already stored in the Files API under `file_id`, so we don't
+        re-upload — we just pin the existing id and (best-effort) caption the bytes. Pages are
+        fixed at {1} because a standalone image is a single-page document.
+        """
+        caption = await self._maybe_caption_picture(content, picture_ref="self")
+        return ExtractedPicture(
+            picture_ref="self",
+            file_id=file_id,
+            pages=frozenset({1}),
+            caption=caption,
+        )
+
     async def _upload_picture_bytes(self, png_bytes: bytes, base_name: str, picture_ref: str) -> Any:
         """Upload PNG bytes to the Files API as an OpenAIFilePurpose.ASSISTANTS file."""
         safe_ref = picture_ref.replace("#", "").replace("/", "_").strip("_")
@@ -366,6 +397,12 @@ class DoclingFileProcessor:
             # against, every extracted picture is attached to the single chunk.
             text = doc.export_to_markdown()
             if not text or not text.strip():
+                # Mirror the chunker branch's image-only fallback: when the document has no
+                # extractable text but we do have pictures (e.g. a standalone image input
+                # synthesised into a self-picture), emit one chunk per picture so the file is
+                # still retrievable instead of returning an empty list.
+                if pictures:
+                    return self._build_image_only_chunks(document_id, document_metadata, pictures)
                 return []
 
             chunk_id = generate_chunk_id(document_id, text)
@@ -529,6 +566,11 @@ class DoclingFileProcessor:
 
     async def shutdown(self) -> None:
         pass
+
+
+def _is_image_input_filename(filename: str) -> bool:
+    """Return True when the filename suffix is one docling routes through InputFormat.IMAGE."""
+    return os.path.splitext(filename)[1].lower() in _IMAGE_INPUT_SUFFIXES
 
 
 def _pages_for_item(item: Any) -> list[int]:
