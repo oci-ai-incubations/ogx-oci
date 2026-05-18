@@ -6,6 +6,7 @@
 
 """Unit tests for the inline docling file processor's image-extraction pipeline."""
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -270,7 +271,8 @@ class TestCreateChunksNoStrategy:
         )
 
         assert len(chunks) == 1
-        assert chunks[0].metadata[IMAGE_FILE_IDS_METADATA_KEY] == ["file-a", "file-b"]
+        # Stored JSON-encoded because vector-store search response attributes only allow scalars
+        assert json.loads(chunks[0].metadata[IMAGE_FILE_IDS_METADATA_KEY]) == ["file-a", "file-b"]
         assert chunks[0].metadata["filename"] == "x.pdf"
         assert chunks[0].metadata["document_id"] == "doc-1"
 
@@ -321,7 +323,7 @@ class TestCreateChunksNoStrategy:
 
         assert len(chunks) == 1
         assert chunks[0].content == "Image: 11.jpg"
-        assert chunks[0].metadata[IMAGE_FILE_IDS_METADATA_KEY] == ["file-src"]
+        assert json.loads(chunks[0].metadata[IMAGE_FILE_IDS_METADATA_KEY]) == ["file-src"]
 
 
 # NOTE: _build_converter wiring is intentionally not unit-tested here. It does lazy imports of
@@ -440,10 +442,10 @@ class TestImageOnlyFallbackChunks:
         assert len(chunks) == 2
         # First chunk uses the caption as its body
         assert chunks[0].content == "A turbocharger."
-        assert chunks[0].metadata[IMAGE_FILE_IDS_METADATA_KEY] == ["file-a"]
+        assert json.loads(chunks[0].metadata[IMAGE_FILE_IDS_METADATA_KEY]) == ["file-a"]
         # Second chunk has no caption — falls back to a filename-based label
         assert chunks[1].content == "Image: 1.jpg"
-        assert chunks[1].metadata[IMAGE_FILE_IDS_METADATA_KEY] == ["file-b"]
+        assert json.loads(chunks[1].metadata[IMAGE_FILE_IDS_METADATA_KEY]) == ["file-b"]
         # Each chunk records the picture index in chunk_window so callers can correlate
         assert chunks[0].chunk_metadata.chunk_window == "image-0"
         assert chunks[1].chunk_metadata.chunk_window == "image-1"
@@ -455,6 +457,19 @@ class TestImageOnlyFallbackChunks:
             pictures=[ExtractedPicture("#/pictures/0", "file-a", frozenset({1}), caption=None)],
         )
         assert chunks[0].content == "Image"
+
+    def test_image_file_ids_is_scalar_string_not_list(self) -> None:
+        """Regression: storing image_file_ids as a list[str] broke
+        VectorStoreSearchResponse.attributes validation (only str|float|bool allowed),
+        causing file_search to silently return zero results. Must be a JSON-encoded string."""
+        chunks = DoclingFileProcessor._build_image_only_chunks(
+            document_id="doc-1",
+            document_metadata={"filename": "1.jpg"},
+            pictures=[ExtractedPicture("self", "file-src", frozenset({1}), caption=None)],
+        )
+        stored = chunks[0].metadata[IMAGE_FILE_IDS_METADATA_KEY]
+        assert isinstance(stored, str), f"image_file_ids must be a scalar string, got {type(stored).__name__}"
+        assert json.loads(stored) == ["file-src"]
 
     def test_empty_picture_list_yields_no_chunks(self) -> None:
         assert (
@@ -627,4 +642,4 @@ class TestProcessFileImageSelfPictureFallback:
         assert len(response.chunks) == 1
         # Caption disabled and no caption available — fallback body is the filename label
         assert response.chunks[0].content == "Image: 11.jpg"
-        assert response.chunks[0].metadata[IMAGE_FILE_IDS_METADATA_KEY] == ["file-src"]
+        assert json.loads(response.chunks[0].metadata[IMAGE_FILE_IDS_METADATA_KEY]) == ["file-src"]

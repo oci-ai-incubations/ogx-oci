@@ -6,6 +6,7 @@
 
 import base64
 import io
+import json
 import os
 import tempfile
 import time
@@ -42,6 +43,11 @@ log = get_logger(name=__name__, category="providers::file_processors")
 # Metadata key under which extracted image file_ids are stored on each chunk. Documented as part
 # of the multimodal RAG pipeline contract — Phase 2 work consumes this key during retrieval and
 # Phase 3 work folds the referenced images into the next chat completion as input_image parts.
+#
+# Stored as a JSON-encoded string, NOT a list: the OpenAI vector store search response schema
+# (VectorStoreSearchResponse.attributes) constrains each value to str | float | bool, so a raw
+# list[str] fails Pydantic validation and aborts the entire file_search call with empty results.
+# Consumers must json.loads() to recover the list.
 IMAGE_FILE_IDS_METADATA_KEY = "image_file_ids"
 
 # Response-level (ProcessFileResponse.metadata) key carrying the full union of file_ids the
@@ -427,7 +433,7 @@ class DoclingFileProcessor:
                 **document_metadata,
             }
             if pictures:
-                metadata[IMAGE_FILE_IDS_METADATA_KEY] = [p.file_id for p in pictures]
+                metadata[IMAGE_FILE_IDS_METADATA_KEY] = json.dumps([p.file_id for p in pictures])
 
             return [
                 Chunk(
@@ -483,7 +489,7 @@ class DoclingFileProcessor:
 
             chunk_image_ids = self._collect_chunk_image_file_ids(doc_chunk, pictures)
             if chunk_image_ids:
-                meta[IMAGE_FILE_IDS_METADATA_KEY] = chunk_image_ids
+                meta[IMAGE_FILE_IDS_METADATA_KEY] = json.dumps(chunk_image_ids)
 
             chunks.append(
                 Chunk(
@@ -535,7 +541,7 @@ class DoclingFileProcessor:
             meta: dict[str, Any] = {
                 "document_id": document_id,
                 **document_metadata,
-                IMAGE_FILE_IDS_METADATA_KEY: [picture.file_id],
+                IMAGE_FILE_IDS_METADATA_KEY: json.dumps([picture.file_id]),
             }
             chunks.append(
                 Chunk(
