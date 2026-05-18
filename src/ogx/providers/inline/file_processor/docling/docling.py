@@ -168,7 +168,7 @@ class DoclingFileProcessor:
         """
         from docling.datamodel.base_models import InputFormat
         from docling.datamodel.pipeline_options import PdfPipelineOptions
-        from docling.document_converter import DocumentConverter, PdfFormatOption
+        from docling.document_converter import DocumentConverter, ImageFormatOption, PdfFormatOption
 
         if not self.config.extract_images:
             return DocumentConverter()
@@ -180,12 +180,16 @@ class DoclingFileProcessor:
         # EasyOCR/Tesseract) whose transitive deps include OpenCV → libxcb.so.1, which is not
         # present in the slim OGX runtime image. Phase 1 only needs picture extraction;
         # disabling these keeps initialisation cheap and side-steps the missing X11 lib.
+        # Mirrored on the image-format option below because standalone images route through
+        # their own ImageFormatOption — which would otherwise reach for the default (table
+        # structure ON) pipeline options and reproduce the crash.
         pdf_pipeline.do_table_structure = False
         pdf_pipeline.do_ocr = False
 
         return DocumentConverter(
             format_options={
                 InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_pipeline),
+                InputFormat.IMAGE: ImageFormatOption(pipeline_options=pdf_pipeline),
             }
         )
 
