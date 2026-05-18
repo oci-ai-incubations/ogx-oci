@@ -365,9 +365,49 @@ class TestMaybeCaptionPicture:
         content = sent.messages[0].content
         types = [getattr(p, "type", None) for p in content]
         assert "text" in types and "image_url" in types
-        # data URL contains base64 of the bytes
+        # data URL contains base64 of the bytes; mime is detected from PNG magic
         image_part = next(p for p in content if getattr(p, "type", None) == "image_url")
         assert image_part.image_url.url.startswith("data:image/png;base64,")
+
+    async def test_uses_jpeg_mime_for_jpg_bytes(self) -> None:
+        """Mime is sniffed from the body — JPG bytes must not be tagged as PNG, which some
+        vision adapters silently reject."""
+        cfg = DoclingFileProcessorConfig(caption_images=True, caption_model="vl-model")
+        inference = AsyncMock()
+        inference.openai_chat_completion = AsyncMock(
+            return_value=SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="x"))])
+        )
+        processor = DoclingFileProcessor(cfg, inference_api=inference)
+
+        # JPEG magic header
+        await processor._maybe_caption_picture(b"\xff\xd8\xff\xe0\x00\x10JFIF", picture_ref="self")
+
+        sent = inference.openai_chat_completion.await_args.args[0]
+        image_part = next(p for p in sent.messages[0].content if getattr(p, "type", None) == "image_url")
+        assert image_part.image_url.url.startswith("data:image/jpeg;base64,")
+
+    async def test_extracts_text_from_list_shaped_content(self) -> None:
+        """Some providers return message.content as a list of content parts rather than a
+        plain string; the parser must handle both shapes."""
+        cfg = DoclingFileProcessorConfig(caption_images=True, caption_model="vl-model")
+        inference = AsyncMock()
+        inference.openai_chat_completion = AsyncMock(
+            return_value=SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=[
+                                SimpleNamespace(type="text", text="A turbocharger sits on a workbench."),
+                            ]
+                        )
+                    )
+                ]
+            )
+        )
+        processor = DoclingFileProcessor(cfg, inference_api=inference)
+
+        result = await processor._maybe_caption_picture(b"\x89PNG\r\n\x1a\n", picture_ref="#/pictures/0")
+        assert result == "A turbocharger sits on a workbench."
 
     async def test_tolerates_inference_failure(self) -> None:
         cfg = DoclingFileProcessorConfig(caption_images=True, caption_model="vl-model")
@@ -425,6 +465,76 @@ class TestImageOnlyFallbackChunks:
             )
             == []
         )
+
+
+class TestDetectImageMime:
+    """Sniffer must distinguish the formats whose bytes might end up in _build_self_picture."""
+
+    @pytest.mark.parametrize(
+        "prefix,expected",
+        [
+            (b"\x89PNG\r\n\x1a\n", "image/png"),
+            (b"\xff\xd8\xff\xe0\x00\x10JFIF", "image/jpeg"),
+            (b"GIF89a\x00\x00\x00", "image/gif"),
+            (b"RIFF\x00\x00\x00\x00WEBP", "image/webp"),
+            (b"II*\x00\x00\x00\x00\x00", "image/tiff"),
+            (b"unknown-bytes", "image/png"),
+        ],
+    )
+    def test_known_signatures(self, prefix: bytes, expected: str) -> None:
+        from ogx.providers.inline.file_processor.docling.docling import _detect_image_mime
+
+        assert _detect_image_mime(prefix) == expected
+
+
+class TestExtractCaptionText:
+    """Caption parser handles both str-content and list-of-parts shapes from chat completions."""
+
+    def test_returns_none_for_empty_response(self) -> None:
+        from ogx.providers.inline.file_processor.docling.docling import _extract_caption_text
+
+        assert _extract_caption_text(SimpleNamespace(choices=[])) is None
+        assert _extract_caption_text(SimpleNamespace()) is None
+
+    def test_returns_string_content_stripped(self) -> None:
+        from ogx.providers.inline.file_processor.docling.docling import _extract_caption_text
+
+        resp = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="  hello  "))])
+        assert _extract_caption_text(resp) == "hello"
+
+    def test_returns_concatenated_text_from_part_list(self) -> None:
+        from ogx.providers.inline.file_processor.docling.docling import _extract_caption_text
+
+        resp = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=[
+                            SimpleNamespace(type="text", text="A red car"),
+                            SimpleNamespace(type="text", text="on a track."),
+                        ]
+                    )
+                )
+            ]
+        )
+        assert _extract_caption_text(resp) == "A red car on a track."
+
+    def test_handles_dict_shaped_parts(self) -> None:
+        """Some adapters yield content parts as dicts rather than objects."""
+        from ogx.providers.inline.file_processor.docling.docling import _extract_caption_text
+
+        resp = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=[{"type": "text", "text": "caption"}]))]
+        )
+        assert _extract_caption_text(resp) == "caption"
+
+    def test_returns_none_for_non_text_parts_only(self) -> None:
+        from ogx.providers.inline.file_processor.docling.docling import _extract_caption_text
+
+        resp = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=[SimpleNamespace(type="image_url", text=None)]))]
+        )
+        assert _extract_caption_text(resp) is None
 
 
 class TestIsImageInputFilename:

@@ -311,23 +311,32 @@ class DoclingFileProcessor:
             file=upload,
         )
 
-    async def _maybe_caption_picture(self, png_bytes: bytes, picture_ref: str) -> str | None:
+    async def _maybe_caption_picture(self, image_bytes: bytes, picture_ref: str) -> str | None:
         """Call the configured vision model to caption a picture.
 
         Returns the caption text on success, or None if captioning is disabled, the inference
-        API isn't wired in, the configured model is unset, or the call fails. Failures are
-        logged at warning level — caption-generation is best-effort and must not block the rest
-        of ingest from succeeding.
+        API isn't wired in, the configured model is unset, or the call fails. Failures and
+        skips are logged at INFO so live deployments can confirm whether captioning is firing
+        without needing DEBUG-level verbosity — caption-generation is best-effort and must not
+        block the rest of ingest from succeeding.
+
+        The mime type of the data URL passed to the vision model is detected from the bytes'
+        magic header (PNG / JPEG / WebP / GIF), falling back to PNG. Some OCI vision adapters
+        reject data URLs whose declared mime doesn't match the body, so a hardcoded
+        `image/png` tag was silently rejecting JPG uploads downstream.
         """
         if not self.config.caption_images:
             return None
         if self.inference_api is None:
-            log.debug("caption_images=True but Inference API not bound; skipping caption")
+            log.info(
+                "Caption skipped: caption_images=True but Inference API not bound",
+                picture_ref=picture_ref,
+            )
             return None
         model_id = self.config.caption_model
         if not model_id:
             log.warning(
-                "caption_images=True but caption_model is unset; skipping caption",
+                "Caption skipped: caption_images=True but caption_model is unset",
                 picture_ref=picture_ref,
             )
             return None
@@ -341,7 +350,15 @@ class DoclingFileProcessor:
             OpenAIUserMessageParam,
         )
 
-        data_url = f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}"
+        mime_type = _detect_image_mime(image_bytes)
+        data_url = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
+        log.info(
+            "Captioning picture",
+            picture_ref=picture_ref,
+            model=model_id,
+            mime_type=mime_type,
+            byte_count=len(image_bytes),
+        )
         params = OpenAIChatCompletionRequestWithExtraBody(
             model=model_id,
             messages=[
@@ -367,15 +384,14 @@ class DoclingFileProcessor:
             )
             return None
 
-        choices = getattr(resp, "choices", None) or []
-        if not choices:
-            return None
-        message = getattr(choices[0], "message", None)
-        content = getattr(message, "content", None) if message is not None else None
-        if isinstance(content, str):
-            caption = content.strip()
-            return caption or None
-        return None
+        caption = _extract_caption_text(resp)
+        if caption is None:
+            log.info(
+                "Caption response produced no text",
+                picture_ref=picture_ref,
+                model=model_id,
+            )
+        return caption
 
     def _create_chunks(
         self,
@@ -571,6 +587,57 @@ class DoclingFileProcessor:
 def _is_image_input_filename(filename: str) -> bool:
     """Return True when the filename suffix is one docling routes through InputFormat.IMAGE."""
     return os.path.splitext(filename)[1].lower() in _IMAGE_INPUT_SUFFIXES
+
+
+def _detect_image_mime(image_bytes: bytes) -> str:
+    """Sniff the image format from its magic header.
+
+    Falls back to image/png so callers that pass already-rendered PNG bytes (the existing
+    PictureItem path) keep working without change. The self-picture path passes raw upload
+    bytes, which may be JPEG / WebP / GIF — vision adapters typically validate the data URL
+    mime against the body, so a wrong tag silently fails the caption call.
+    """
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if image_bytes.startswith(b"GIF87a") or image_bytes.startswith(b"GIF89a"):
+        return "image/gif"
+    if image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    if image_bytes[:4] in (b"II*\x00", b"MM\x00*"):
+        return "image/tiff"
+    return "image/png"
+
+
+def _extract_caption_text(resp: Any) -> str | None:
+    """Pull caption text from an OpenAI-shaped chat completion response.
+
+    `message.content` may be a plain string (classic Chat Completions) or a list of content
+    parts each with `type` + `text` (the multimodal-aware shape some providers return). Return
+    the concatenated text of all text-parts, stripped, or None when nothing usable is present.
+    """
+    choices = getattr(resp, "choices", None) or []
+    if not choices:
+        return None
+    message = getattr(choices[0], "message", None)
+    if message is None:
+        return None
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        stripped = content.strip()
+        return stripped or None
+    if isinstance(content, list):
+        texts: list[str] = []
+        for part in content:
+            part_type = getattr(part, "type", None) or (part.get("type") if isinstance(part, dict) else None)
+            if part_type in ("text", "output_text"):
+                text = getattr(part, "text", None) or (part.get("text") if isinstance(part, dict) else None)
+                if isinstance(text, str) and text.strip():
+                    texts.append(text.strip())
+        if texts:
+            return " ".join(texts)
+    return None
 
 
 def _pages_for_item(item: Any) -> list[int]:
