@@ -127,3 +127,80 @@ class TestOpenAIVectorStoreMixin:
         # Should not fail with the file_processor_api error
         if result.last_error:
             assert "FileProcessor API is required" not in result.last_error.message
+
+
+class TestDeleteExtractedImageFiles:
+    """Covers the cascade-cleanup hook invoked from openai_delete_vector_store_file."""
+
+    def _mixin(self, files_api=None) -> "MockVectorStoreMixin":
+        return MockVectorStoreMixin(
+            inference_api=AsyncMock(),
+            files_api=files_api,
+            kvstore=AsyncMock(),
+            file_processor_api=None,
+        )
+
+    async def test_no_op_when_files_api_missing(self):
+        mixin = self._mixin(files_api=None)
+        # Pass a populated dict; the absence of files_api should short-circuit before any work.
+        await mixin._delete_extracted_image_files(
+            {"extracted_image_file_ids": ["file-1", "file-2"]},
+            parent_file_id="file-parent",
+        )
+
+    async def test_no_op_when_metadata_missing_or_empty(self):
+        files_api = AsyncMock()
+        mixin = self._mixin(files_api=files_api)
+
+        await mixin._delete_extracted_image_files({}, parent_file_id="file-parent")
+        await mixin._delete_extracted_image_files({"extracted_image_file_ids": []}, parent_file_id="file-parent")
+        await mixin._delete_extracted_image_files(
+            {"extracted_image_file_ids": "not-a-list"}, parent_file_id="file-parent"
+        )
+
+        files_api.openai_delete_file.assert_not_awaited()
+
+    async def test_calls_files_api_delete_for_each_id(self):
+        files_api = AsyncMock()
+        files_api.openai_delete_file = AsyncMock()
+        mixin = self._mixin(files_api=files_api)
+
+        await mixin._delete_extracted_image_files(
+            {"extracted_image_file_ids": ["file-a", "file-b", "file-c"]},
+            parent_file_id="file-parent",
+        )
+
+        deleted_ids = [call.args[0].file_id for call in files_api.openai_delete_file.await_args_list]
+        assert deleted_ids == ["file-a", "file-b", "file-c"]
+
+    async def test_continues_when_individual_delete_fails(self):
+        files_api = AsyncMock()
+        attempted: list[str] = []
+
+        async def _delete(req):
+            attempted.append(req.file_id)
+            if req.file_id == "file-b":
+                raise RuntimeError("S3 says no")
+
+        files_api.openai_delete_file.side_effect = _delete
+        mixin = self._mixin(files_api=files_api)
+
+        await mixin._delete_extracted_image_files(
+            {"extracted_image_file_ids": ["file-a", "file-b", "file-c"]},
+            parent_file_id="file-parent",
+        )
+
+        # All three are attempted even though the middle one raises
+        assert attempted == ["file-a", "file-b", "file-c"]
+
+    async def test_skips_non_string_entries(self):
+        files_api = AsyncMock()
+        mixin = self._mixin(files_api=files_api)
+
+        await mixin._delete_extracted_image_files(
+            {"extracted_image_file_ids": ["file-a", None, 42, "file-b"]},  # type: ignore[list-item]
+            parent_file_id="file-parent",
+        )
+
+        deleted_ids = [call.args[0].file_id for call in files_api.openai_delete_file.await_args_list]
+        assert deleted_ids == ["file-a", "file-b"]

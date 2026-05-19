@@ -21,6 +21,14 @@ from pydantic import BaseModel, Field
 from ogx_api.schema_utils import json_schema_type
 from ogx_api.vector_io import Chunk, VectorStoreChunkingStrategy
 
+# Single source of truth for the ProcessFileResponse.metadata key under which a file processor
+# emits the union of file_ids it uploaded while parsing the source document (e.g. each embedded
+# picture extracted from a PDF). Downstream consumers — the vector store mixin in particular —
+# read this key to bind the lifetime of those extracted files to the parent vector_store_file
+# so a delete cascades cleanup of the children. Lives here (not in the docling provider) because
+# multiple providers + the consumer all need to agree on the literal.
+EXTRACTED_IMAGE_FILE_IDS_METADATA_KEY = "extracted_image_file_ids"
+
 
 @json_schema_type
 class ProcessFileResponse(BaseModel):
@@ -64,6 +72,7 @@ class ProcessFileRequest(BaseModel):
 
 
 __all__ = [
+    "EXTRACTED_IMAGE_FILE_IDS_METADATA_KEY",
     "ProcessFileRequest",
     "ProcessFileResponse",
 ]
