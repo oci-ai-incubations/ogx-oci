@@ -5,6 +5,7 @@
 # the root directory of this source tree.
 
 import mimetypes
+from typing import Any
 
 from fastapi import HTTPException, UploadFile
 
@@ -89,15 +90,21 @@ class AutoFileProcessor:
         # docling treats a standalone image as a 1-page document with a single PictureItem.
         self.docling: DoclingFileProcessor | None = None
         if config.prefer_docling_for_pdfs:
-            docling_config = DoclingFileProcessorConfig(
-                default_chunk_size_tokens=config.default_chunk_size_tokens,
-                default_chunk_overlap_tokens=config.default_chunk_overlap_tokens,
-                extract_images=config.docling_extract_images,
-                images_scale=config.docling_images_scale,
-                min_image_dim_px=config.docling_min_image_dim_px,
-                caption_images=config.docling_caption_images,
-                caption_model=config.docling_caption_model,
-            )
+            # Only override caption_prompt when the user explicitly set one — leaving it None
+            # preserves docling's built-in default rather than clobbering it with an empty value.
+            docling_kwargs: dict[str, Any] = {
+                "default_chunk_size_tokens": config.default_chunk_size_tokens,
+                "default_chunk_overlap_tokens": config.default_chunk_overlap_tokens,
+                "extract_images": config.default_extract_images,
+                "images_scale": config.default_images_scale,
+                "min_image_dim_px": config.default_min_image_dim_px,
+                "caption_images": config.default_caption_images,
+                "caption_model": config.default_caption_model,
+                "caption_max_tokens": config.default_caption_max_tokens,
+            }
+            if config.default_caption_prompt is not None:
+                docling_kwargs["caption_prompt"] = config.default_caption_prompt
+            docling_config = DoclingFileProcessorConfig(**docling_kwargs)
             self.docling = DoclingFileProcessor(docling_config, files_api=files_api, inference_api=inference_api)
 
     async def process_file(

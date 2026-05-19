@@ -141,9 +141,9 @@ async def test_docling_backend_not_constructed_when_flag_off():
 async def test_prefer_docling_for_pdfs_constructs_docling_backend():
     config = AutoFileProcessorConfig(
         prefer_docling_for_pdfs=True,
-        docling_extract_images=True,
-        docling_images_scale=2.5,
-        docling_min_image_dim_px=128,
+        default_extract_images=True,
+        default_images_scale=2.5,
+        default_min_image_dim_px=128,
     )
     files_api = MagicMock()
     proc = AutoFileProcessor(config, files_api)
@@ -226,8 +226,8 @@ async def test_image_still_goes_to_markitdown_when_flag_off():
 async def test_inference_api_threaded_into_docling_when_caption_enabled():
     config = AutoFileProcessorConfig(
         prefer_docling_for_pdfs=True,
-        docling_caption_images=True,
-        docling_caption_model="vl-model",
+        default_caption_images=True,
+        default_caption_model="vl-model",
     )
     files_api = MagicMock()
     inference_api = MagicMock()
@@ -238,3 +238,38 @@ async def test_inference_api_threaded_into_docling_when_caption_enabled():
     assert proc.docling.inference_api is inference_api
     assert proc.docling.config.caption_images is True
     assert proc.docling.config.caption_model == "vl-model"
+
+
+async def test_caption_max_tokens_threaded_into_docling():
+    """default_caption_max_tokens overrides docling's caption_max_tokens default."""
+    config = AutoFileProcessorConfig(
+        prefer_docling_for_pdfs=True,
+        default_caption_images=True,
+        default_caption_model="vl-model",
+        default_caption_max_tokens=64,
+    )
+    proc = AutoFileProcessor(config, MagicMock(), inference_api=MagicMock())
+
+    assert proc.docling is not None
+    assert proc.docling.config.caption_max_tokens == 64
+
+
+async def test_caption_prompt_falls_back_to_docling_default_when_unset():
+    """An unset default_caption_prompt must preserve docling's built-in default rather than
+    overwriting it with None — otherwise captions would be generated with no prompt."""
+    from ogx.providers.inline.file_processor.docling.config import DoclingFileProcessorConfig
+
+    config_unset = AutoFileProcessorConfig(prefer_docling_for_pdfs=True)
+    proc_unset = AutoFileProcessor(config_unset, MagicMock())
+    assert proc_unset.docling is not None
+    docling_default = DoclingFileProcessorConfig.model_fields["caption_prompt"].default
+    assert proc_unset.docling.config.caption_prompt == docling_default
+
+    # When explicitly overridden, the user's prompt wins.
+    config_set = AutoFileProcessorConfig(
+        prefer_docling_for_pdfs=True,
+        default_caption_prompt="Read every label on this part. Return one short line.",
+    )
+    proc_set = AutoFileProcessor(config_set, MagicMock())
+    assert proc_set.docling is not None
+    assert proc_set.docling.config.caption_prompt == "Read every label on this part. Return one short line."

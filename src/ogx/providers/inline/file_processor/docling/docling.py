@@ -28,7 +28,11 @@ except ImportError:  # pragma: no cover - fallback only exercised when docling-c
 
 from ogx.log import get_logger
 from ogx.providers.utils.vector_io.vector_utils import generate_chunk_id
-from ogx_api.file_processors import ProcessFileRequest, ProcessFileResponse
+from ogx_api.file_processors import (
+    EXTRACTED_IMAGE_FILE_IDS_METADATA_KEY,
+    ProcessFileRequest,
+    ProcessFileResponse,
+)
 from ogx_api.files import OpenAIFilePurpose, RetrieveFileContentRequest, RetrieveFileRequest, UploadFileRequest
 from ogx_api.vector_io import (
     Chunk,
@@ -50,10 +54,10 @@ log = get_logger(name=__name__, category="providers::file_processors")
 # Consumers must json.loads() to recover the list.
 IMAGE_FILE_IDS_METADATA_KEY = "image_file_ids"
 
-# Response-level (ProcessFileResponse.metadata) key carrying the full union of file_ids the
-# processor uploaded while parsing the document. The vector-store mixin reads it when persisting
-# a vector_store_file so that subsequent deletion can cascade cleanup of the extracted images.
-EXTRACTED_IMAGE_FILE_IDS_METADATA_KEY = "extracted_image_file_ids"
+# EXTRACTED_IMAGE_FILE_IDS_METADATA_KEY now lives in ogx_api.file_processors so the producer
+# (this provider) and consumer (openai_vector_store_mixin) share a single source of truth.
+# Re-exported here for backward compatibility with anything that still imports it from docling.
+__all__ = ["EXTRACTED_IMAGE_FILE_IDS_METADATA_KEY", "IMAGE_FILE_IDS_METADATA_KEY", "DoclingFileProcessor", "ExtractedPicture"]
 
 # Filename suffixes that docling routes through InputFormat.IMAGE. A standalone image of any of
 # these types is treated by docling as the document itself rather than an embedded picture, so
@@ -321,10 +325,14 @@ class DoclingFileProcessor:
         """Call the configured vision model to caption a picture.
 
         Returns the caption text on success, or None if captioning is disabled, the inference
-        API isn't wired in, the configured model is unset, or the call fails. Failures and
-        skips are logged at INFO so live deployments can confirm whether captioning is firing
-        without needing DEBUG-level verbosity — caption-generation is best-effort and must not
-        block the rest of ingest from succeeding.
+        API isn't wired in, the configured model is unset, or the call fails. Per-picture
+        skips and call-point events log at DEBUG so PDFs with hundreds of figures don't flood
+        INFO; configuration mistakes (caption_model unset) and hard failures (caption call
+        raised) stay at WARNING so they remain visible at default verbosity. The aggregate
+        document-level summary ("Extracted document pictures") still logs at INFO so a
+        deployment can see captioning is firing without scanning per-picture spam.
+        Caption-generation is best-effort and must not block the rest of ingest from
+        succeeding.
 
         The mime type of the data URL passed to the vision model is detected from the bytes'
         magic header (PNG / JPEG / WebP / GIF), falling back to PNG. Some OCI vision adapters
@@ -334,7 +342,7 @@ class DoclingFileProcessor:
         if not self.config.caption_images:
             return None
         if self.inference_api is None:
-            log.info(
+            log.debug(
                 "Caption skipped: caption_images=True but Inference API not bound",
                 picture_ref=picture_ref,
             )
@@ -358,7 +366,7 @@ class DoclingFileProcessor:
 
         mime_type = _detect_image_mime(image_bytes)
         data_url = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
-        log.info(
+        log.debug(
             "Captioning picture",
             picture_ref=picture_ref,
             model=model_id,
@@ -375,6 +383,11 @@ class DoclingFileProcessor:
                     ]
                 )
             ],
+            # OpenAI deprecated `max_tokens` in favour of `max_completion_tokens` on the
+            # Chat Completions API, but the OCI generative-ai-inference adapter (and most
+            # other adapters we route through) still honours the legacy `max_tokens` name
+            # for backwards compatibility. If/when OCI flips to require the new name, swap
+            # this to `max_completion_tokens` and re-run the integration tests.
             max_tokens=self.config.caption_max_tokens,
             stream=False,
         )
@@ -392,7 +405,7 @@ class DoclingFileProcessor:
 
         caption = _extract_caption_text(resp)
         if caption is None:
-            log.info(
+            log.debug(
                 "Caption response produced no text",
                 picture_ref=picture_ref,
                 model=model_id,

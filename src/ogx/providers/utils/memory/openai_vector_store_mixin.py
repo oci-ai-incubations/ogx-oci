@@ -80,7 +80,7 @@ from ogx_api import (
     VectorStoreSearchResponse,
     VectorStoreSearchResponsePage,
 )
-from ogx_api.file_processors.models import ProcessFileRequest
+from ogx_api.file_processors.models import EXTRACTED_IMAGE_FILE_IDS_METADATA_KEY, ProcessFileRequest
 from ogx_api.files.models import (
     DeleteFileRequest,
     RetrieveFileContentRequest,
@@ -988,7 +988,7 @@ class OpenAIVectorStoreMixin(ABC):
             )
 
             pf_metadata = pf_resp.metadata or {}
-            pf_image_ids = pf_metadata.get("extracted_image_file_ids")
+            pf_image_ids = pf_metadata.get(EXTRACTED_IMAGE_FILE_IDS_METADATA_KEY)
             if isinstance(pf_image_ids, list):
                 # De-dup while preserving order in case a processor reports the same file_id twice.
                 seen: set[str] = set()
@@ -1099,7 +1099,7 @@ class OpenAIVectorStoreMixin(ABC):
         file_info = vector_store_file_object.model_dump()
         file_info["filename"] = file_response.filename if file_response else ""
         if extracted_image_file_ids:
-            file_info["extracted_image_file_ids"] = extracted_image_file_ids
+            file_info[EXTRACTED_IMAGE_FILE_IDS_METADATA_KEY] = extracted_image_file_ids
 
         dict_chunks = [c.model_dump() for c in embedded_chunks]
         await self._save_openai_vector_store_file(vector_store_id, file_id, file_info, dict_chunks)
@@ -1314,7 +1314,7 @@ class OpenAIVectorStoreMixin(ABC):
         """
         if not self.files_api:
             return
-        image_ids = stored_file_info.get("extracted_image_file_ids") if stored_file_info else None
+        image_ids = stored_file_info.get(EXTRACTED_IMAGE_FILE_IDS_METADATA_KEY) if stored_file_info else None
         if not isinstance(image_ids, list) or not image_ids:
             return
 
