@@ -168,3 +168,147 @@ async def test_routes_file_id_using_resolved_filename(auto_processor_with_files_
     result = await auto_processor_with_files_api.process_file(request)
     assert result is not None
     assert len(result.chunks) >= 1
+
+
+async def test_docling_backend_not_constructed_when_flag_off():
+    config = AutoFileProcessorConfig()
+    files_api = MagicMock()
+    proc = AutoFileProcessor(config, files_api)
+    assert proc.docling is None
+
+
+async def test_prefer_docling_for_pdfs_constructs_docling_backend():
+    config = AutoFileProcessorConfig(
+        prefer_docling_for_pdfs=True,
+        default_extract_images=True,
+        default_images_scale=2.5,
+        default_min_image_dim_px=128,
+    )
+    files_api = MagicMock()
+    proc = AutoFileProcessor(config, files_api)
+
+    assert proc.docling is not None
+    assert proc.docling.config.extract_images is True
+    assert proc.docling.config.images_scale == 2.5
+    assert proc.docling.config.min_image_dim_px == 128
+    # Same files_api instance gets threaded through
+    assert proc.docling.files_api is files_api
+
+
+async def test_pdf_routes_to_docling_when_flag_on():
+    config = AutoFileProcessorConfig(prefer_docling_for_pdfs=True)
+    files_api = MagicMock()
+    proc = AutoFileProcessor(config, files_api)
+
+    sentinel_response = MagicMock()
+    proc.docling.process_file = AsyncMock(return_value=sentinel_response)
+    proc.pypdf.process_file = AsyncMock(return_value=MagicMock())  # should not be called
+
+    file = UploadFile(filename="test.pdf", file=io.BytesIO(b"%PDF-1.4 minimal"))
+    request = ProcessFileRequest()
+
+    result = await proc.process_file(request, file=file)
+
+    assert result is sentinel_response
+    proc.docling.process_file.assert_awaited_once()
+    proc.pypdf.process_file.assert_not_awaited()
+
+
+async def test_text_files_still_route_to_pypdf_when_docling_flag_on():
+    config = AutoFileProcessorConfig(prefer_docling_for_pdfs=True)
+    files_api = MagicMock()
+    proc = AutoFileProcessor(config, files_api)
+
+    sentinel_response = MagicMock()
+    proc.pypdf.process_file = AsyncMock(return_value=sentinel_response)
+    proc.docling.process_file = AsyncMock(return_value=MagicMock())  # should not be called
+
+    file = UploadFile(filename="notes.txt", file=io.BytesIO(b"plain text"))
+    request = ProcessFileRequest()
+
+    result = await proc.process_file(request, file=file)
+
+    assert result is sentinel_response
+    proc.pypdf.process_file.assert_awaited_once()
+    proc.docling.process_file.assert_not_awaited()
+
+
+async def test_image_routes_to_docling_when_flag_on():
+    config = AutoFileProcessorConfig(prefer_docling_for_pdfs=True)
+    proc = AutoFileProcessor(config, MagicMock())
+
+    sentinel = MagicMock()
+    proc.docling.process_file = AsyncMock(return_value=sentinel)
+    proc.markitdown.process_file = AsyncMock(return_value=MagicMock())  # should not be called
+
+    file = UploadFile(filename="photo.jpg", file=io.BytesIO(b"\xff\xd8\xff"))  # JPEG SOI
+    result = await proc.process_file(ProcessFileRequest(), file=file)
+
+    assert result is sentinel
+    proc.docling.process_file.assert_awaited_once()
+    proc.markitdown.process_file.assert_not_awaited()
+
+
+async def test_image_still_goes_to_markitdown_when_flag_off():
+    # Existing deployments that haven't opted in get the previous behaviour for images.
+    proc = AutoFileProcessor(AutoFileProcessorConfig(), MagicMock())
+    sentinel = MagicMock()
+    proc.markitdown.process_file = AsyncMock(return_value=sentinel)
+
+    file = UploadFile(filename="photo.png", file=io.BytesIO(b"\x89PNG\r\n\x1a\n"))
+    result = await proc.process_file(ProcessFileRequest(), file=file)
+
+    assert result is sentinel
+    proc.markitdown.process_file.assert_awaited_once()
+
+
+async def test_inference_api_threaded_into_docling_when_caption_enabled():
+    config = AutoFileProcessorConfig(
+        prefer_docling_for_pdfs=True,
+        default_caption_images=True,
+        default_caption_model="vl-model",
+    )
+    files_api = MagicMock()
+    inference_api = MagicMock()
+
+    proc = AutoFileProcessor(config, files_api, inference_api=inference_api)
+
+    assert proc.docling is not None
+    assert proc.docling.inference_api is inference_api
+    assert proc.docling.config.caption_images is True
+    assert proc.docling.config.caption_model == "vl-model"
+
+
+async def test_caption_max_tokens_threaded_into_docling():
+    """default_caption_max_tokens overrides docling's caption_max_tokens default."""
+    config = AutoFileProcessorConfig(
+        prefer_docling_for_pdfs=True,
+        default_caption_images=True,
+        default_caption_model="vl-model",
+        default_caption_max_tokens=64,
+    )
+    proc = AutoFileProcessor(config, MagicMock(), inference_api=MagicMock())
+
+    assert proc.docling is not None
+    assert proc.docling.config.caption_max_tokens == 64
+
+
+async def test_caption_prompt_falls_back_to_docling_default_when_unset():
+    """An unset default_caption_prompt must preserve docling's built-in default rather than
+    overwriting it with None — otherwise captions would be generated with no prompt."""
+    from ogx.providers.inline.file_processor.docling.config import DoclingFileProcessorConfig
+
+    config_unset = AutoFileProcessorConfig(prefer_docling_for_pdfs=True)
+    proc_unset = AutoFileProcessor(config_unset, MagicMock())
+    assert proc_unset.docling is not None
+    docling_default = DoclingFileProcessorConfig.model_fields["caption_prompt"].default
+    assert proc_unset.docling.config.caption_prompt == docling_default
+
+    # When explicitly overridden, the user's prompt wins.
+    config_set = AutoFileProcessorConfig(
+        prefer_docling_for_pdfs=True,
+        default_caption_prompt="Read every label on this part. Return one short line.",
+    )
+    proc_set = AutoFileProcessor(config_set, MagicMock())
+    assert proc_set.docling is not None
+    assert proc_set.docling.config.caption_prompt == "Read every label on this part. Return one short line."

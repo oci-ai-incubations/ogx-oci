@@ -102,6 +102,12 @@ providers:
     config:
       default_chunk_size_tokens: 800
       default_chunk_overlap_tokens: 400
+      extract_images: true
+      images_scale: 2.0
+      min_image_dim_px: 64
+      caption_images: false
+      caption_model: null
+      caption_max_tokens: 180
   batches:
   - provider_id: reference
     provider_type: inline::reference

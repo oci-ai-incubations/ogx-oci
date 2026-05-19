@@ -80,8 +80,9 @@ from ogx_api import (
     VectorStoreSearchResponse,
     VectorStoreSearchResponsePage,
 )
-from ogx_api.file_processors.models import ProcessFileRequest
+from ogx_api.file_processors.models import EXTRACTED_IMAGE_FILE_IDS_METADATA_KEY, ProcessFileRequest
 from ogx_api.files.models import (
+    DeleteFileRequest,
     RetrieveFileContentRequest,
     RetrieveFileRequest,
 )
@@ -930,6 +931,11 @@ class OpenAIVectorStoreMixin(ABC):
         chunks: list[Chunk] = []
         embedded_chunks: list[EmbeddedChunk] = []
         file_response: OpenAIFileObject | None = None
+        # File processors (e.g. inline::docling) may upload derivative artefacts to the Files
+        # API during processing — extracted figure/picture PNGs in the docling case. They surface
+        # the resulting file_ids on ProcessFileResponse.metadata["extracted_image_file_ids"] so
+        # the parent vector_store_file can own their lifecycle and cascade-delete on removal.
+        extracted_image_file_ids: list[str] = []
 
         vector_store_file_object = VectorStoreFileObject(
             id=file_id,
@@ -980,6 +986,16 @@ class OpenAIVectorStoreMixin(ABC):
             pf_resp = await self.file_processor_api.process_file(
                 ProcessFileRequest(file_id=file_id, chunking_strategy=chunking_strategy)
             )
+
+            pf_metadata = pf_resp.metadata or {}
+            pf_image_ids = pf_metadata.get(EXTRACTED_IMAGE_FILE_IDS_METADATA_KEY)
+            if isinstance(pf_image_ids, list):
+                # De-dup while preserving order in case a processor reports the same file_id twice.
+                seen: set[str] = set()
+                for fid in pf_image_ids:
+                    if isinstance(fid, str) and fid not in seen:
+                        seen.add(fid)
+                        extracted_image_file_ids.append(fid)
 
             chunks = []
             for chunk in pf_resp.chunks:
@@ -1082,6 +1098,8 @@ class OpenAIVectorStoreMixin(ABC):
         # so that chunks include the embeddings that were generated
         file_info = vector_store_file_object.model_dump()
         file_info["filename"] = file_response.filename if file_response else ""
+        if extracted_image_file_ids:
+            file_info[EXTRACTED_IMAGE_FILE_IDS_METADATA_KEY] = extracted_image_file_ids
 
         dict_chunks = [c.model_dump() for c in embedded_chunks]
         await self._save_openai_vector_store_file(vector_store_id, file_id, file_info, dict_chunks)
@@ -1234,6 +1252,12 @@ class OpenAIVectorStoreMixin(ABC):
         if vector_store_id not in self.openai_vector_stores:
             raise VectorStoreNotFoundError(vector_store_id)
 
+        # Load the raw file_info before anything else so we can read provider-side artefacts
+        # like extracted_image_file_ids (uploaded during processing) and cascade-clean them.
+        # If the kvstore entry is missing for any reason the dict comes back empty, leaving
+        # the rest of the delete path unaffected.
+        stored_file_info = await self._load_openai_vector_store_file(vector_store_id, file_id)
+
         dict_chunks = await self._load_openai_vector_store_file_contents(vector_store_id, file_id)
         chunks = [Chunk.model_validate(c) for c in dict_chunks]
 
@@ -1262,6 +1286,11 @@ class OpenAIVectorStoreMixin(ABC):
         file = await self.openai_retrieve_vector_store_file(vector_store_id, file_id)
         await self._delete_openai_vector_store_file_from_storage(vector_store_id, file_id)
 
+        # Cascade-clean derivative artefacts (e.g. docling-extracted picture PNGs) recorded on
+        # the parent vector_store_file. Failures are logged and tolerated — a half-deleted file
+        # is preferable to blocking the user-visible delete because of an orphan in S3.
+        await self._delete_extracted_image_files(stored_file_info, parent_file_id=file_id)
+
         # Update in-memory cache
         store_info["file_ids"].remove(file_id)
         store_info["file_counts"][file.status] -= 1
@@ -1274,6 +1303,40 @@ class OpenAIVectorStoreMixin(ABC):
         return VectorStoreFileDeleteResponse(
             id=file_id,
             deleted=True,
+        )
+
+    async def _delete_extracted_image_files(self, stored_file_info: dict[str, Any], parent_file_id: str) -> None:
+        """Best-effort cleanup of file_ids the processor uploaded on behalf of the parent file.
+
+        Iterates `stored_file_info["extracted_image_file_ids"]` and deletes each via the Files
+        API. Logs and continues on any individual failure (missing entry, S3 error) — these are
+        not retryable from this call site and shouldn't block the parent delete from completing.
+        """
+        if not self.files_api:
+            return
+        image_ids = stored_file_info.get(EXTRACTED_IMAGE_FILE_IDS_METADATA_KEY) if stored_file_info else None
+        if not isinstance(image_ids, list) or not image_ids:
+            return
+
+        deleted_count = 0
+        for image_id in image_ids:
+            if not isinstance(image_id, str):
+                continue
+            try:
+                await self.files_api.openai_delete_file(DeleteFileRequest(file_id=image_id))
+                deleted_count += 1
+            except Exception as e:
+                logger.warning(
+                    "Failed to delete extracted image file",
+                    parent_file_id=parent_file_id,
+                    image_file_id=image_id,
+                    error=str(e),
+                )
+        logger.info(
+            "Cascaded cleanup of extracted image files",
+            parent_file_id=parent_file_id,
+            requested=len(image_ids),
+            deleted=deleted_count,
         )
 
     async def openai_create_vector_store_file_batch(
