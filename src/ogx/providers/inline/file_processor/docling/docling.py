@@ -57,7 +57,12 @@ IMAGE_FILE_IDS_METADATA_KEY = "image_file_ids"
 # EXTRACTED_IMAGE_FILE_IDS_METADATA_KEY now lives in ogx_api.file_processors so the producer
 # (this provider) and consumer (openai_vector_store_mixin) share a single source of truth.
 # Re-exported here for backward compatibility with anything that still imports it from docling.
-__all__ = ["EXTRACTED_IMAGE_FILE_IDS_METADATA_KEY", "IMAGE_FILE_IDS_METADATA_KEY", "DoclingFileProcessor", "ExtractedPicture"]
+__all__ = [
+    "EXTRACTED_IMAGE_FILE_IDS_METADATA_KEY",
+    "IMAGE_FILE_IDS_METADATA_KEY",
+    "DoclingFileProcessor",
+    "ExtractedPicture",
+]
 
 # Filename suffixes that docling routes through InputFormat.IMAGE. A standalone image of any of
 # these types is treated by docling as the document itself rather than an embedded picture, so
