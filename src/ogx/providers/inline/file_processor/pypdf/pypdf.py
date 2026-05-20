@@ -31,6 +31,37 @@ log = get_logger(name=__name__, category="providers::file_processors")
 # Large enough to fit any reasonable document in one chunk
 SINGLE_CHUNK_WINDOW_TOKENS = 1_000_000
 
+# MIME types that are structurally text but IANA-registered under application/* rather than
+# text/*. These are processed by the same code path as text/plain — decoded as bytes-to-string
+# and chunked — but a naive `mime_category == "text"` check misses them, so the routing
+# allowlists must enumerate them explicitly. Keep this in sync with anything you want
+# SUPPORTED_DESCRIPTION (in auto.py) to advertise.
+PYPDF_TEXT_LIKE_APPLICATION_MIME_TYPES: frozenset[str] = frozenset({
+    "application/json",
+    "application/xml",
+    "application/yaml",
+    "application/x-yaml",
+    "application/javascript",
+    "application/x-sh",
+    "application/x-python",
+    "application/x-python-code",
+    "application/toml",
+})
+
+# Python's stdlib `mimetypes` doesn't register YAML or TOML extensions by default — guess_type
+# returns (None, None) for "config.yaml" and "pyproject.toml" on a fresh interpreter. Register
+# them at module import so the auto router's filename-based MIME lookup finds them without
+# needing the byte-sniff fallback. Done as a module-level side-effect because the alternative
+# (registering at runtime per-request) is wasteful and the alternative (only allowing files
+# that stdlib already knows) would silently reject very common text-shaped configs.
+for _suffix, _type in (
+    (".yaml", "application/yaml"),
+    (".yml", "application/yaml"),
+    (".toml", "application/toml"),
+):
+    mimetypes.add_type(_type, _suffix)
+del _suffix, _type
+
 
 class PyPDFFileProcessor:
     """PyPDF-based file processor for PDF documents."""
@@ -75,14 +106,14 @@ class PyPDFFileProcessor:
 
         if mime_type == "application/pdf":
             return self._process_pdf(content, filename, file_id, chunking_strategy, start_time)
-        elif mime_category == "text":
+        elif mime_category == "text" or mime_type in PYPDF_TEXT_LIKE_APPLICATION_MIME_TYPES:
             return self._process_text(content, filename, file_id, chunking_strategy, start_time)
         else:
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    f"File type '{mime_type or 'unknown'}' is not supported by the pypdf file processor. "
-                    "Supported types: PDF and text files (txt, csv, md, etc.)."
+                    f"File type '{mime_type or 'unknown'}' (filename={filename!r}) is not supported "
+                    "by the pypdf file processor. Supported types: PDF and text files."
                 ),
             )
 

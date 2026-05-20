@@ -20,7 +20,10 @@ from ogx.core.datatypes import AccessRule
 from ogx.core.id_generation import generate_object_id
 from ogx.core.storage.sqlstore.authorized_sqlstore import AuthorizedSqlStore
 from ogx.core.storage.sqlstore.sqlstore import sqlstore_impl
+from ogx.log import get_logger
 from ogx.providers.utils.files.sanitize import sanitize_content_disposition_filename
+
+log = get_logger(name=__name__, category="providers::files")
 from ogx_api import (
     ExpiresAfter,
     Files,
@@ -221,7 +224,21 @@ class S3FilesImpl(Files):
 
         file_id = generate_object_id("file", lambda: f"file-{uuid.uuid4().hex}")
 
-        filename = sanitize_content_disposition_filename(getattr(file, "filename", None) or "uploaded_file")
+        raw_filename = getattr(file, "filename", None)
+        if not raw_filename:
+            # Silent fallback to "uploaded_file" masked an upstream bug where uploads with
+            # spaces or non-ASCII names were arriving without a multipart filename param —
+            # downstream MIME detection then failed because "uploaded_file" has no extension
+            # and the user saw a misleading "File type 'unknown' is not supported" error.
+            # Log loudly so the missing-filename condition is visible in production traces.
+            log.warning(
+                "Upload arrived without a filename in the multipart Content-Disposition; "
+                "storing as 'uploaded_file' which will cause MIME-based routing to fail downstream",
+                file_id=file_id,
+                purpose=purpose.value if hasattr(purpose, "value") else purpose,
+            )
+            raw_filename = "uploaded_file"
+        filename = sanitize_content_disposition_filename(raw_filename)
 
         created_at = self._now()
 
