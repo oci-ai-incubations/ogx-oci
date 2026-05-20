@@ -18,9 +18,10 @@ from . import fastapi_routes
 from .api import FileProcessors
 
 # Import models for re-export
-from .models import ProcessFileRequest, ProcessFileResponse
+from .models import EXTRACTED_IMAGE_FILE_IDS_METADATA_KEY, ProcessFileRequest, ProcessFileResponse
 
 __all__ = [
+    "EXTRACTED_IMAGE_FILE_IDS_METADATA_KEY",
     "FileProcessors",
     "ProcessFileRequest",
     "ProcessFileResponse",

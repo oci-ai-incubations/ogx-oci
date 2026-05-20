@@ -25,7 +25,10 @@ def available_providers() -> list[ProviderSpec]:
             pip_packages=["pypdf>=6.7.2", "markitdown[all]"],
             module="ogx.providers.inline.file_processor.auto",
             config_class="ogx.providers.inline.file_processor.auto.AutoFileProcessorConfig",
-            api_dependencies=[Api.files],
+            # `inference` is optional at runtime — used only when the docling backend is
+            # constructed with caption_images=True. The dependency is declared here so the
+            # provider gets the inference handle when present; absence is tolerated.
+            api_dependencies=[Api.files, Api.inference],
             description=(
                 "Composite file processor that automatically dispatches to the appropriate backend "
                 "based on file MIME type. Routes PDF and text files to PyPDF, and office/structured "
@@ -92,7 +95,9 @@ or `remote::docling-serve` instead.
             pip_packages=["docling"],
             module="ogx.providers.inline.file_processor.docling",
             config_class="ogx.providers.inline.file_processor.docling.DoclingFileProcessorConfig",
-            api_dependencies=[Api.files],
+            # `inference` is consulted only when caption_images is enabled on the config; the
+            # provider gracefully degrades to no-caption behaviour when inference is missing.
+            api_dependencies=[Api.files, Api.inference],
             description="""
 [Docling](https://github.com/docling-project/docling) is a layout-aware, structure-preserving
 document parser for OGX. Unlike simple text extraction, Docling understands document

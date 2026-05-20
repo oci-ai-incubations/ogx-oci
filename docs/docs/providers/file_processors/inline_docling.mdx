@@ -97,10 +97,23 @@ See [Docling's documentation](https://docling-project.github.io/docling/) for mo
 |-------|------|----------|---------|-------------|
 | `default_chunk_size_tokens` | `int` | No | 800 | Default chunk size in tokens when chunking_strategy type is 'auto' |
 | `default_chunk_overlap_tokens` | `int` | No | 400 | Default chunk overlap in tokens when chunking_strategy type is 'auto' |
+| `extract_images` | `bool` | No | True | Whether to extract embedded images (figures/pictures) from the source document, upload each via the Files API, and attach the resulting file_ids to the owning chunk's metadata under 'image_file_ids'. Requires a Files API binding. |
+| `images_scale` | `float` | No | 2.0 | Render scale passed to docling's PDF pipeline for picture/figure rasterisation. Higher values yield sharper extracted images at the cost of more processing time and larger uploaded file sizes. |
+| `min_image_dim_px` | `int` | No | 64 | Images with width or height below this threshold (in pixels) are skipped during extraction. Filters out spurious icons, bullet points, and decorative artefacts. |
+| `caption_images` | `bool` | No | False | When True, every extracted picture is captioned by calling the configured vision model (caption_model) through the bound Inference API. The caption is stored on the ExtractedPicture and used as the text body of synthetic chunks emitted for image-only inputs (PNG/JPG uploaded directly), making them retrievable via semantic search instead of only by filename. Off by default — each caption incurs one vision-model call per picture at ingest time. |
+| `caption_model` | `str \| None` | No |  | Identifier of the vision-capable model used for captioning. Must be configured when caption_images is True; ignored otherwise. Example: 'oci/meta.llama-3.2-90b-vision-instruct'. |
+| `caption_prompt` | `str` | No | Describe this image in 1-2 sentences. Focus on factual content — visible objects, people, text, layout, setting. Avoid aesthetic adjectives. Output the description directly with no preamble. | Prompt sent alongside each picture to the captioning model. Tune for shorter or longer captions, or to bias toward specific facets (text-in-image OCR, scene description, technical diagrams, etc.). |
+| `caption_max_tokens` | `int` | No | 180 | Upper bound on caption length in tokens. Kept small by default since captions are embedded as chunk text and longer captions dilute retrieval signal. |
 
 ## Sample Configuration
 
 ```yaml
 default_chunk_size_tokens: 800
 default_chunk_overlap_tokens: 400
+extract_images: true
+images_scale: 2.0
+min_image_dim_px: 64
+caption_images: false
+caption_model: null
+caption_max_tokens: 180
 ```
