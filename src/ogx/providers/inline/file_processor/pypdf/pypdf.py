@@ -31,6 +31,14 @@ log = get_logger(name=__name__, category="providers::file_processors")
 # Large enough to fit any reasonable document in one chunk
 SINGLE_CHUNK_WINDOW_TOKENS = 1_000_000
 
+# Text-like formats that `mimetypes.guess_type` reports under `application/*` instead
+# of `text/*`. Without this set, `.json`/`.xml` uploads would be rejected even though
+# the processor can handle them identically to text files.
+PYPDF_TEXT_LIKE_APPLICATION_MIME_TYPES = {
+    "application/json",
+    "application/xml",
+}
+
 
 class PyPDFFileProcessor:
     """PyPDF-based file processor for PDF documents."""
@@ -75,14 +83,14 @@ class PyPDFFileProcessor:
 
         if mime_type == "application/pdf":
             return self._process_pdf(content, filename, file_id, chunking_strategy, start_time)
-        elif mime_category == "text":
+        elif mime_category == "text" or mime_type in PYPDF_TEXT_LIKE_APPLICATION_MIME_TYPES:
             return self._process_text(content, filename, file_id, chunking_strategy, start_time)
         else:
             raise HTTPException(
                 status_code=422,
                 detail=(
                     f"File type '{mime_type or 'unknown'}' is not supported by the pypdf file processor. "
-                    "Supported types: PDF and text files (txt, csv, md, etc.)."
+                    "Supported types: PDF, text files (txt, csv, md, etc.), JSON, and XML."
                 ),
             )
 

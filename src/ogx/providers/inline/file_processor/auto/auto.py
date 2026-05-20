@@ -14,7 +14,7 @@ from ogx.providers.inline.file_processor.docling.docling import DoclingFileProce
 from ogx.providers.inline.file_processor.markitdown.config import MarkItDownFileProcessorConfig
 from ogx.providers.inline.file_processor.markitdown.markitdown_processor import MarkItDownFileProcessor
 from ogx.providers.inline.file_processor.pypdf.config import PyPDFFileProcessorConfig
-from ogx.providers.inline.file_processor.pypdf.pypdf import PyPDFFileProcessor
+from ogx.providers.inline.file_processor.pypdf.pypdf import PYPDF_TEXT_LIKE_APPLICATION_MIME_TYPES, PyPDFFileProcessor
 from ogx_api.file_processors import ProcessFileRequest, ProcessFileResponse
 from ogx_api.files import RetrieveFileRequest
 
@@ -23,7 +23,8 @@ from .config import AutoFileProcessorConfig
 # MIME types routed to MarkItDown. Derived from markitdown's bundled converters:
 # DocxConverter, PptxConverter, XlsxConverter, XlsConverter, HtmlConverter,
 # EpubConverter, OutlookMsgConverter, IpynbConverter, RssConverter, ImageConverter,
-# AudioConverter, ZipConverter. CSV, JSON, XML, and text/* are handled by PyPDF.
+# AudioConverter, ZipConverter. text/* plus PYPDF_TEXT_LIKE_APPLICATION_MIME_TYPES
+# (json, xml) are handled by PyPDF.
 MARKITDOWN_MIME_TYPES = {
     # Office documents
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # .docx
@@ -50,10 +51,11 @@ MARKITDOWN_MIME_TYPES = {
     "audio/x-wav",  # .wav
 }
 
-SUPPORTED_DESCRIPTION = (
-    "PDF, text (txt, csv, md, json, xml, html, code), "
-    "office (DOCX, PPTX, XLSX, XLS, DOC, PPT, RTF), "
-    "EPUB, RSS, ZIP, images, and audio"
+# Built from the actual allowlists so the user-facing description can't drift
+# from what the router will accept. "text/*" covers txt, csv, md, html, and most
+# source-code extensions that mimetypes maps under text/*.
+SUPPORTED_DESCRIPTION = ", ".join(
+    ["text/*", *sorted({"application/pdf", *PYPDF_TEXT_LIKE_APPLICATION_MIME_TYPES, *MARKITDOWN_MIME_TYPES})]
 )
 
 
@@ -119,7 +121,11 @@ class AutoFileProcessor:
         if self.docling is not None and (mime_type == "application/pdf" or mime_category == "image"):
             return await self.docling.process_file(request=request, file=file)
 
-        if mime_type == "application/pdf" or mime_category == "text":
+        if (
+            mime_type == "application/pdf"
+            or mime_category == "text"
+            or mime_type in PYPDF_TEXT_LIKE_APPLICATION_MIME_TYPES
+        ):
             return await self.pypdf.process_file(
                 file=file,
                 file_id=request.file_id,
