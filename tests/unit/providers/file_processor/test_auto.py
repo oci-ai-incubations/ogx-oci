@@ -312,3 +312,130 @@ async def test_caption_prompt_falls_back_to_docling_default_when_unset():
     proc_set = AutoFileProcessor(config_set, MagicMock())
     assert proc_set.docling is not None
     assert proc_set.docling.config.caption_prompt == "Read every label on this part. Return one short line."
+
+
+# Format-routing regression matrix
+# --------------------------------------------------------------------------------------------
+# Every format advertised in SUPPORTED_DESCRIPTION must be routable to *some* backend without
+# the auto router raising a 422. The previous per-format tests covered .txt/.csv/.md/.docx/etc.
+# but missed .json/.xml (which PR #7 fixed) and never exercised the `file_id=` code path that
+# production uses. This matrix drives every advertised format twice — once via direct `file=`
+# upload and once via `file_id=` — so a regression in either path lights up CI.
+
+_ROUTING_MATRIX = [
+    # (filename, head_bytes, expected_processor)
+    ("doc.pdf", b"%PDF-1.4 stub", "pypdf"),
+    ("notes.txt", b"plain text", "pypdf"),
+    ("data.csv", b"a,b\n1,2", "pypdf"),
+    ("readme.md", b"# hi", "pypdf"),
+    ("page.html", b"<html></html>", "pypdf"),
+    ("metadata.json", b'{"k": 1}', "pypdf"),
+    ("feed.xml", b"<?xml version='1.0'?><r/>", "pypdf"),
+    ("config.yaml", b"k: 1", "pypdf"),
+    ("script.py", b"print(1)", "pypdf"),
+    ("memo.docx", b"PK\x03\x04fake", "markitdown"),
+    ("deck.pptx", b"PK\x03\x04fake", "markitdown"),
+    ("sheet.xlsx", b"PK\x03\x04fake", "markitdown"),
+    ("photo.png", b"\x89PNG\r\n\x1a\n", "markitdown"),
+]
+
+
+@pytest.mark.parametrize("filename,head_bytes,expected_processor", _ROUTING_MATRIX)
+async def test_advertised_format_routes_via_file_param(filename, head_bytes, expected_processor):
+    """Every format we advertise must route to one of the configured backends when uploaded
+    via the direct `file=` path."""
+    proc = AutoFileProcessor(AutoFileProcessorConfig(), MagicMock())
+    sentinel = MagicMock()
+    proc.pypdf.process_file = AsyncMock(return_value=sentinel)
+    proc.markitdown.process_file = AsyncMock(return_value=sentinel)
+
+    file = UploadFile(filename=filename, file=io.BytesIO(head_bytes))
+    await proc.process_file(ProcessFileRequest(), file=file)
+
+    if expected_processor == "pypdf":
+        proc.pypdf.process_file.assert_awaited_once()
+        proc.markitdown.process_file.assert_not_awaited()
+    else:
+        proc.markitdown.process_file.assert_awaited_once()
+        proc.pypdf.process_file.assert_not_awaited()
+
+
+@pytest.mark.parametrize("filename,head_bytes,expected_processor", _ROUTING_MATRIX)
+async def test_advertised_format_routes_via_file_id(filename, head_bytes, expected_processor):
+    """Same matrix, but routed through the production `file_id=` path — _resolve_filename
+    fetches via openai_retrieve_file. This is the code path real uploads take and was never
+    exercised by the original per-format tests."""
+    config = AutoFileProcessorConfig()
+    files_api = MagicMock()
+    info = MagicMock()
+    info.filename = filename
+    files_api.openai_retrieve_file = AsyncMock(return_value=info)
+    content_resp = MagicMock()
+    content_resp.body = head_bytes
+    files_api.openai_retrieve_file_content = AsyncMock(return_value=content_resp)
+
+    proc = AutoFileProcessor(config, files_api)
+    sentinel = MagicMock()
+    proc.pypdf.process_file = AsyncMock(return_value=sentinel)
+    proc.markitdown.process_file = AsyncMock(return_value=sentinel)
+
+    await proc.process_file(ProcessFileRequest(file_id="file-test"))
+
+    if expected_processor == "pypdf":
+        proc.pypdf.process_file.assert_awaited_once()
+    else:
+        proc.markitdown.process_file.assert_awaited_once()
+
+
+async def test_missing_extension_recovers_via_bytes_sniff_pdf():
+    """The 'uploaded_file' fallback in the S3 files provider used to produce a misleading
+    'File type unknown' 422 for valid uploads. The sniff fallback should rescue PDFs."""
+    config = AutoFileProcessorConfig()
+    files_api = MagicMock()
+    info = MagicMock()
+    info.filename = "uploaded_file"  # what S3 stores when multipart filename is missing
+    files_api.openai_retrieve_file = AsyncMock(return_value=info)
+    content_resp = MagicMock()
+    content_resp.body = b"%PDF-1.4 stub pdf bytes"
+    files_api.openai_retrieve_file_content = AsyncMock(return_value=content_resp)
+
+    proc = AutoFileProcessor(config, files_api)
+    proc.pypdf.process_file = AsyncMock(return_value=MagicMock())
+    proc.markitdown.process_file = AsyncMock(return_value=MagicMock())
+
+    await proc.process_file(ProcessFileRequest(file_id="file-test"))
+    proc.pypdf.process_file.assert_awaited_once()
+
+
+async def test_missing_extension_recovers_via_bytes_sniff_docx():
+    """Same fallback, but for a docx whose multipart filename was dropped — the exact bug
+    behind the 'RedBull Req Discussion NOtes.docx' rejection."""
+    config = AutoFileProcessorConfig()
+    files_api = MagicMock()
+    info = MagicMock()
+    info.filename = "uploaded_file"
+    files_api.openai_retrieve_file = AsyncMock(return_value=info)
+    # A real docx is a ZIP whose first ~1 KiB embeds "[Content_Types].xml".
+    content_resp = MagicMock()
+    content_resp.body = b"PK\x03\x04" + b"\x00" * 30 + b"[Content_Types].xml" + b"\x00" * 1000
+    files_api.openai_retrieve_file_content = AsyncMock(return_value=content_resp)
+
+    proc = AutoFileProcessor(config, files_api)
+    proc.pypdf.process_file = AsyncMock(return_value=MagicMock())
+    proc.markitdown.process_file = AsyncMock(return_value=MagicMock())
+
+    await proc.process_file(ProcessFileRequest(file_id="file-test"))
+    proc.markitdown.process_file.assert_awaited_once()
+
+
+async def test_unknown_filename_error_includes_filename_for_debugging():
+    """The 422 detail must include the actual stored filename so operators can tell whether
+    they're looking at 'extension genuinely unrecognized' vs 'filename lost upstream'."""
+    proc = AutoFileProcessor(AutoFileProcessorConfig(), MagicMock())
+    file = UploadFile(filename="something.xyz", file=io.BytesIO(b"random unsniffable bytes that don't match any signature"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await proc.process_file(ProcessFileRequest(), file=file)
+
+    assert exc_info.value.status_code == 422
+    assert "filename='something.xyz'" in exc_info.value.detail

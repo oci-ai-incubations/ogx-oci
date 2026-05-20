@@ -32,12 +32,34 @@ log = get_logger(name=__name__, category="providers::file_processors")
 SINGLE_CHUNK_WINDOW_TOKENS = 1_000_000
 
 # Text-like formats that `mimetypes.guess_type` reports under `application/*` instead
-# of `text/*`. Without this set, `.json`/`.xml` uploads would be rejected even though
-# the processor can handle them identically to text files.
+# of `text/*`. Without this set, these uploads would be rejected even though the processor
+# can handle them identically to text files. The original JSON/XML pair shipped in PR #7;
+# the rest extend coverage to config/script formats that ingest pipelines hit constantly.
 PYPDF_TEXT_LIKE_APPLICATION_MIME_TYPES = {
     "application/json",
     "application/xml",
+    "application/yaml",
+    "application/x-yaml",
+    "application/javascript",
+    "application/x-sh",
+    "application/x-python",
+    "application/x-python-code",
+    "application/toml",
 }
+
+# Python's stdlib `mimetypes` doesn't register YAML or TOML extensions by default — guess_type
+# returns (None, None) for "config.yaml" and "pyproject.toml" on a fresh interpreter. Register
+# them at module import so the auto router's filename-based MIME lookup finds them without
+# needing the byte-sniff fallback. Done as a module-level side-effect because the alternative
+# (registering at runtime per-request) is wasteful and the alternative (only allowing files
+# stdlib already knows) would silently reject very common text-shaped configs.
+for _suffix, _type in (
+    (".yaml", "application/yaml"),
+    (".yml", "application/yaml"),
+    (".toml", "application/toml"),
+):
+    mimetypes.add_type(_type, _suffix)
+del _suffix, _type
 
 
 class PyPDFFileProcessor:
@@ -89,8 +111,8 @@ class PyPDFFileProcessor:
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    f"File type '{mime_type or 'unknown'}' is not supported by the pypdf file processor. "
-                    "Supported types: PDF, text files (txt, csv, md, etc.), JSON, and XML."
+                    f"File type '{mime_type or 'unknown'}' (filename={filename!r}) is not supported "
+                    "by the pypdf file processor. Supported types: PDF and text files."
                 ),
             )
 
