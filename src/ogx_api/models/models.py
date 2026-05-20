@@ -118,6 +118,23 @@ class ListModelsResponse(BaseModel):
 
 
 @json_schema_type
+class AdminModel(Model):
+    """A model resource extended with admin-only visibility state."""
+
+    hidden: bool = Field(
+        default=False,
+        description="True if this model has been administratively hidden from the user-facing model list.",
+    )
+
+
+@json_schema_type
+class AdminListModelsResponse(BaseModel):
+    """Admin response containing all model objects, including those hidden from the user-facing list."""
+
+    data: list[AdminModel] = Field(..., description="List of model objects with their visibility state.")
+
+
+@json_schema_type
 class OpenAIModel(BaseModel):
     """A model from OpenAI.
 
@@ -176,6 +193,8 @@ class UnregisterModelRequest(BaseModel):
 
 
 __all__ = [
+    "AdminListModelsResponse",
+    "AdminModel",
     "CommonModelFields",
     "GetModelRequest",
     "ListModelsResponse",

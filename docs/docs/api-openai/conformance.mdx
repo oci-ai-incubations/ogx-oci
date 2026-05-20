@@ -22,8 +22,8 @@ This documentation is auto-generated from the OpenAI API specification compariso
 | **Endpoints Implemented** | 30/146 |
 | **Total Properties Checked** | 3487 |
 | **Schema/Type Issues** | 184 |
-| **Missing Properties** | 101 |
-| **Total Issues to Fix** | 285 |
+| **Missing Properties** | 102 |
+| **Total Issues to Fix** | 286 |
 
 ## Integration Test Coverage
 
@@ -50,8 +50,8 @@ Categories are sorted by conformance score (lowest first, needing most attention
 | Files | 76.2% | 42 | 8 | 2 |
 | Embeddings | 78.6% | 14 | 3 | 0 |
 | Vector stores | 82.9% | 310 | 41 | 12 |
+| Models | 86.7% | 15 | 1 | 1 |
 | Responses | 88.9% | 225 | 25 | 0 |
-| Models | 93.3% | 15 | 1 | 0 |
 | Chat | 98.7% | 449 | 5 | 1 |
 | Conversations | 98.9% | 2165 | 19 | 4 |
 
@@ -784,6 +784,32 @@ Below is a detailed breakdown of conformance issues and missing properties for e
 
 </details>
 
+### Models
+
+**Score:** 86.7% · **Issues:** 1 · **Missing:** 1
+
+#### `/models/{model}`
+
+**DELETE**
+
+<details>
+<summary>Missing Properties (1)</summary>
+
+- `responses.200`
+
+</details>
+
+**GET**
+
+<details>
+<summary>Schema Issues (1)</summary>
+
+| Property | Issues |
+|----------|--------|
+| `responses.200.content.application/json.properties.owned_by` | Default changed: None -&gt; ogx |
+
+</details>
+
 ### Responses
 
 **Score:** 88.9% · **Issues:** 25 · **Missing:** 0
@@ -834,23 +860,6 @@ Below is a detailed breakdown of conformance issues and missing properties for e
 | `requestBody.content.application/json.properties.input` | Union variants added: 2; Union variants removed: 1 | Yes |
 | `requestBody.content.application/json.properties.model` | Type added: ['string']; Union variants removed: 3 | Yes |
 | `responses.200.content.application/json.properties.output.items` | Union variants added: 4 | Yes |
-
-</details>
-
-### Models
-
-**Score:** 93.3% · **Issues:** 1 · **Missing:** 0
-
-#### `/models/{model}`
-
-**GET**
-
-<details>
-<summary>Schema Issues (1)</summary>
-
-| Property | Issues |
-|----------|--------|
-| `responses.200.content.application/json.properties.owned_by` | Default changed: None -&gt; ogx |
 
 </details>
 

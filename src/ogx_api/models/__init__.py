@@ -19,6 +19,8 @@ from .api import Models
 
 # Import models for re-export
 from .models import (
+    AdminListModelsResponse,
+    AdminModel,
     CommonModelFields,
     GetModelRequest,
     ListModelsResponse,
@@ -32,6 +34,8 @@ from .models import (
 )
 
 __all__ = [
+    "AdminListModelsResponse",
+    "AdminModel",
     "CommonModelFields",
     "fastapi_routes",
     "GetModelRequest",

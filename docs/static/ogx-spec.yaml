@@ -1251,6 +1251,37 @@ paths:
           models = client.models.list()
           for model in models:
               print(model.id)
+    post:
+      responses:
+        '200':
+          description: The registered (or restored) model object.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Model'
+        '400':
+          description: Bad Request
+          $ref: '#/components/responses/BadRequest400'
+        '429':
+          description: Too Many Requests
+          $ref: '#/components/responses/TooManyRequests429'
+        '500':
+          description: Internal Server Error
+          $ref: '#/components/responses/InternalServerError500'
+        default:
+          description: Default Response
+          $ref: '#/components/responses/DefaultError'
+      tags:
+      - Models
+      summary: Register a model, or restore one that has been administratively hidden.
+      description: Register a new model in OGX, or restore a previously hidden one. Posting an identifier that matches a hidden (tombstoned) entry flips it back to visible.
+      operationId: register_model_v1_models_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterModelRequest'
+        required: true
   /v1/models/{model_id}:
     get:
       responses:
@@ -1296,6 +1327,36 @@ paths:
 
           model = client.models.retrieve("meta-llama/Llama-3.1-8B-Instruct")
           print(model)
+    delete:
+      responses:
+        '204':
+          description: Model successfully hidden or removed.
+        '400':
+          $ref: '#/components/responses/BadRequest400'
+          description: Bad Request
+        '429':
+          $ref: '#/components/responses/TooManyRequests429'
+          description: Too Many Requests
+        '500':
+          $ref: '#/components/responses/InternalServerError500'
+          description: Internal Server Error
+        default:
+          $ref: '#/components/responses/DefaultError'
+          description: Default Response
+      tags:
+      - Models
+      summary: Hide a model from the user-facing list.
+      description: Hide a model from the user-facing list and from inference requests. For models that originated from a provider's own listing, the entry is tombstoned in the registry so the hide survives provider refreshes; for user-registered models the entry is hard-deleted.
+      operationId: unregister_model_v1_models__model_id__delete
+      parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+          description: The ID of the model to unregister.
+          title: Model Id
+        description: The ID of the model to unregister.
   /v1/moderations:
     post:
       responses:
@@ -3337,6 +3398,32 @@ paths:
 
           messages = client.chat.completions.messages.list(completion_id="completion_id")
           print(messages.data)
+  /v1/admin/models:
+    get:
+      responses:
+        '200':
+          description: A list of model objects with their visibility state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminListModelsResponse'
+        '400':
+          description: Bad Request
+          $ref: '#/components/responses/BadRequest400'
+        '429':
+          description: Too Many Requests
+          $ref: '#/components/responses/TooManyRequests429'
+        '500':
+          description: Internal Server Error
+          $ref: '#/components/responses/InternalServerError500'
+        default:
+          description: Default Response
+          $ref: '#/components/responses/DefaultError'
+      tags:
+      - Models
+      summary: 'Admin: list every model including hidden ones.'
+      description: Admin-only listing of all models registered in OGX, including those that have been administratively hidden from the user-facing model list. Each entry carries a `hidden` flag. Visibility into a row requires delete permission on the model.
+      operationId: list_all_models_v1_admin_models_get
   /v1/messages:
     post:
       responses:
@@ -9848,49 +9935,44 @@ components:
       title: RerankResponse
       description: Response from a reranking request.
     RegisterModelRequest:
-      description: Request model for registering a model.
       properties:
         model_id:
-          description: The identifier of the model to register.
-          title: Model Id
           type: string
+          title: Model Id
+          description: The identifier of the model to register.
         provider_model_id:
           anyOf:
           - type: string
           - type: 'null'
           description: The identifier of the model in the provider.
-          nullable: true
         provider_id:
           anyOf:
           - type: string
           - type: 'null'
           description: The identifier of the provider.
-          nullable: true
         metadata:
           anyOf:
           - additionalProperties: true
             type: object
           - type: 'null'
           description: Any additional metadata for this model.
-          nullable: true
         model_type:
           anyOf:
           - $ref: '#/components/schemas/ModelType'
             title: ModelType
           - type: 'null'
           description: The type of model to register.
-          nullable: true
           title: ModelType
         model_validation:
           anyOf:
           - type: boolean
           - type: 'null'
           description: Enable model availability check during registration. When false (default), validation is deferred to runtime and model is preserved during provider refresh.
-          nullable: true
+      type: object
       required:
       - model_id
       title: RegisterModelRequest
-      type: object
+      description: Request model for registering a model.
     ParamType:
       discriminator:
         mapping:
@@ -9951,6 +10033,86 @@ components:
       - shield_id
       title: RegisterShieldRequest
       description: Request model for registering a shield.
+    AdminListModelsResponse:
+      properties:
+        data:
+          items:
+            $ref: '#/components/schemas/AdminModel'
+          type: array
+          title: Data
+          description: List of model objects with their visibility state.
+      type: object
+      required:
+      - data
+      title: AdminListModelsResponse
+      description: Admin response containing all model objects, including those hidden from the user-facing list.
+    AdminModel:
+      properties:
+        identifier:
+          type: string
+          title: Identifier
+          description: Unique identifier for this resource in ogx
+        provider_resource_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Unique identifier for this resource in the provider
+        provider_id:
+          type: string
+          title: Provider Id
+          description: ID of the provider that owns this resource
+        type:
+          type: string
+          title: Type
+          enum:
+          - model
+        metadata:
+          additionalProperties: true
+          type: object
+          title: Metadata
+          description: Any additional metadata for this model
+        created:
+          type: integer
+          title: Created
+          description: The Unix timestamp in seconds when the model was created.
+        owned_by:
+          type: string
+          title: Owned By
+          description: The owner of the model.
+          default: ogx
+        model_type:
+          $ref: '#/components/schemas/ModelType'
+          default: llm
+        model_validation:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: Enable model availability check during registration. When false (default), validation is deferred to runtime and model is preserved during provider refresh.
+        hidden:
+          type: boolean
+          title: Hidden
+          description: True if this model has been administratively hidden from the user-facing model list.
+          default: false
+        id:
+          type: string
+          title: Id
+          description: The model identifier (OpenAI-compatible alias for identifier).
+          readOnly: true
+        object:
+          type: string
+          title: Object
+          description: The object type, always 'model'.
+          readOnly: true
+          enum:
+          - model
+      type: object
+      required:
+      - identifier
+      - provider_id
+      - id
+      - object
+      title: AdminModel
+      description: A model resource extended with admin-only visibility state.
     AllowedToolsFilter:
       properties:
         tool_names:

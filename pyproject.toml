@@ -70,6 +70,9 @@ dependencies = [
     "psycopg2-binary",
     "mcp>=1.23.0",                                    # for connectors
     "zstandard>=0.23.0",                              # server - zstd request decompression
+    "oci>=2.173.1",
+    "docling>=2.93.0",
+    "oracledb>=4.0.0",
 ]
 
 [project.optional-dependencies]
