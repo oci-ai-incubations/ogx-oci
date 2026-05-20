@@ -166,7 +166,7 @@ class OCIInferenceAdapter(OpenAIMixin):
             ).data
         except Exception as exc:
             # Don't fail the whole inventory if the caller lacks endpoint list permission.
-            logger.warning("OCI list_endpoints failed; DAC endpoints will not be surfaced: %s", exc)
+            logger.warning("OCI list_endpoints failed; DAC endpoints will not be surfaced", error=str(exc))
             return model_ids
 
         for endpoint in endpoints.items:
