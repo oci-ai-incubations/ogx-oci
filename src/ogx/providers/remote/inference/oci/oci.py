@@ -12,7 +12,7 @@ import httpx
 import oci
 from oci.generative_ai.generative_ai_client import GenerativeAiClient
 from oci.generative_ai.models import EndpointCollection, ModelCollection
-from openai import AsyncOpenAI, DefaultAsyncHttpxClient
+from openai import DefaultAsyncHttpxClient
 
 from ogx.log import get_logger
 from ogx.providers.remote.inference.oci.auth import OciInstancePrincipalAuth, OciUserPrincipalAuth
@@ -37,9 +37,6 @@ DEFAULT_OCI_REGION = "us-ashburn-1"
 
 MODEL_CAPABILITIES = ["TEXT_GENERATION", "TEXT_SUMMARIZATION", "TEXT_EMBEDDINGS", "CHAT"]
 
-# DAC endpoints have OCIDs of this resource type; foundation models do not.
-DAC_ENDPOINT_OCID_PREFIX = "ocid1.generativeaiendpoint."
-
 
 class OCIInferenceAdapter(OpenAIMixin):
     """Inference adapter for Oracle Cloud Infrastructure Generative AI.
@@ -48,10 +45,13 @@ class OCIInferenceAdapter(OpenAIMixin):
       1. On-demand foundation models from `GenerativeAiClient.list_models`.
       2. Dedicated AI Cluster (DAC) endpoints from `GenerativeAiClient.list_endpoints`.
 
-    On-demand requests are routed through the shared inference URL
-    (`/20231130/actions/v1`). DAC requests are routed through a per-endpoint
-    URL (`/<endpoint_ocid>/v1`); we build a one-shot AsyncOpenAI client for
-    each DAC call so a single mixin can serve both paths.
+    Both kinds are reached through the same openai-compatible URL
+    (`/20231130/actions/v1/chat/completions`). The only difference is the
+    value in the request body's `model` field: a foundation model expects
+    the model's `display_name` (e.g. `meta.llama-3.3-70b-instruct`), while
+    a DAC endpoint expects the endpoint OCID. We surface DAC endpoints by
+    their friendly display name but bind `provider_resource_id` to the OCID
+    so the OpenAIMixin's `_get_provider_model_id` feeds OCI the right value.
     """
 
     config: OCIConfig
@@ -187,7 +187,21 @@ class OCIInferenceAdapter(OpenAIMixin):
         return model_ids
 
     def construct_model_from_identifier(self, identifier: str) -> Model:
-        """Construct a Model instance corresponding to the given identifier."""
+        """Construct a Model instance corresponding to the given identifier.
+
+        For DAC endpoints, the openai-compat inference URL expects the endpoint
+        OCID in the `model` field of the request body — not the friendly display
+        name. We surface the display name as the user-facing identifier but set
+        `provider_resource_id` to the endpoint OCID so `_get_provider_model_id`
+        feeds the right value to OCI.
+        """
+        if identifier in self._dac_endpoints:
+            return Model(
+                provider_id=self.__provider_id__,  # type: ignore[attr-defined]
+                provider_resource_id=self._dac_endpoints[identifier],
+                identifier=identifier,
+                model_type=ModelType.llm,
+            )
         if identifier in self.embedding_models:
             return Model(
                 provider_id=self.__provider_id__,  # type: ignore[attr-defined]
@@ -201,54 +215,6 @@ class OCIInferenceAdapter(OpenAIMixin):
             identifier=identifier,
             model_type=ModelType.llm,
         )
-
-    # ------------------------------------------------------------------
-    # DAC routing
-    # ------------------------------------------------------------------
-
-    def _resolve_dac_endpoint_id(self, model: str) -> str | None:
-        """If `model` refers to a DAC endpoint, return its OCID, else None."""
-        if model in self._dac_endpoints:
-            return self._dac_endpoints[model]
-        if model.startswith(DAC_ENDPOINT_OCID_PREFIX):
-            return model
-        return None
-
-    def _build_dac_client(self, endpoint_id: str) -> AsyncOpenAI:
-        """Build a one-shot AsyncOpenAI client that targets a single DAC endpoint."""
-        region = self.config.oci_region or DEFAULT_OCI_REGION
-        compartment_id = self.config.oci_compartment_id or ""
-        return AsyncOpenAI(
-            base_url=f"https://inference.generativeai.{region}.oci.oraclecloud.com/{endpoint_id}/v1",
-            api_key="<NOTUSED>",
-            http_client=DefaultAsyncHttpxClient(
-                auth=self._get_auth(),
-                headers={"CompartmentId": compartment_id},
-                verify=self.shared_ssl_context,
-            ),
-        )
-
-    async def openai_chat_completion(self, params):  # type: ignore[override]
-        """Route DAC requests via per-endpoint URL; everything else via the mixin."""
-        endpoint_id = self._resolve_dac_endpoint_id(params.model)
-        if endpoint_id is None:
-            return await super().openai_chat_completion(params)
-
-        # DAC URL embeds the endpoint OCID. The `model` field in the request body
-        # is informational for DAC (the path-encoded endpoint dispatches to the
-        # right model). Pass the served-model display name if known, else the OCID.
-        request_params = params.model_dump(exclude_none=True)
-        async with self._build_dac_client(endpoint_id) as client:
-            return await client.chat.completions.create(**request_params)
-
-    async def openai_completion(self, params):  # type: ignore[override]
-        """DAC routing for legacy completion endpoint."""
-        endpoint_id = self._resolve_dac_endpoint_id(params.model)
-        if endpoint_id is None:
-            return await super().openai_completion(params)
-        request_params = params.model_dump(exclude_none=True)
-        async with self._build_dac_client(endpoint_id) as client:
-            return await client.completions.create(**request_params)
 
     # ------------------------------------------------------------------
     # Embeddings (unchanged below)
