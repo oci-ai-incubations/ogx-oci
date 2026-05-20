@@ -131,6 +131,7 @@ class DoclingFileProcessor:
             content = await file.read()
             filename = file.filename or f"{uuid.uuid4()}.bin"
         elif file_id:
+            assert self.files_api is not None, "Failed to process file_id: files_api is not configured"
             file_info = await self.files_api.openai_retrieve_file(RetrieveFileRequest(file_id=file_id))
             filename = file_info.filename
 
@@ -321,6 +322,7 @@ class DoclingFileProcessor:
         # it back through self.content_type works on supported versions, but we don't rely on it
         # — the Files API only needs the bytes.
 
+        assert self.files_api is not None, "Failed to upload picture bytes: files_api is not configured"
         return await self.files_api.openai_upload_file(
             request=UploadFileRequest(purpose=OpenAIFilePurpose.ASSISTANTS),
             file=upload,
