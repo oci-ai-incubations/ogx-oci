@@ -13,6 +13,7 @@ from ogx.providers.inline.file_processor.auto.config import AutoFileProcessorCon
 from ogx.providers.inline.file_processor.docling.config import DoclingFileProcessorConfig
 from ogx.providers.inline.files.localfs.config import LocalfsFilesImplConfig
 from ogx.providers.inline.safety.code_scanner.config import CodeScannerConfig
+from ogx.providers.inline.safety.prompt_guard.config import PromptGuardConfig
 from ogx.providers.inline.vector_io.faiss.config import FaissVectorIOConfig
 from ogx.providers.inline.vector_io.sqlite_vec.config import SQLiteVectorIOConfig
 from ogx.providers.remote.files.s3.config import S3FilesImplConfig
@@ -41,6 +42,7 @@ def get_distribution_template(name: str = "oci") -> DistributionTemplate:
         "safety": [
             BuildProvider(provider_type="inline::llama-guard"),
             BuildProvider(provider_type="inline::code-scanner"),
+            BuildProvider(provider_type="inline::prompt-guard"),
         ],
         "responses": [BuildProvider(provider_type="inline::builtin")],
         "tool_runtime": [
@@ -102,6 +104,12 @@ def get_distribution_template(name: str = "oci") -> DistributionTemplate:
         config=CodeScannerConfig.sample_run_config(f"~/.ogx/distributions/{name}"),
     )
 
+    prompt_guard_provider = Provider(
+        provider_id="prompt-guard",
+        provider_type="inline::prompt-guard",
+        config=PromptGuardConfig.sample_run_config(f"~/.ogx/distributions/{name}"),
+    )
+
     auto_file_processor_provider = Provider(
         provider_id="auto",
         provider_type="inline::auto",
@@ -131,7 +139,7 @@ def get_distribution_template(name: str = "oci") -> DistributionTemplate:
                 provider_overrides={
                     "inference": [inference_provider],
                     "vector_io": [vector_io_provider, sqlite_vec_provider, oci_vector_io_provider],
-                    "safety": [code_scanner_provider],
+                    "safety": [code_scanner_provider, prompt_guard_provider],
                     "files": [files_provider, s3_files_provider],
                     "file_processors": [auto_file_processor_provider, docling_provider],
                     "batches": [batches_provider],
