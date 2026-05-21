@@ -7,12 +7,13 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi import HTTPException
 
 from ogx.providers.utils.memory.openai_vector_store_mixin import OpenAIVectorStoreMixin
 from ogx_api import (
     VectorStoreChunkingStrategyAuto,
 )
-from ogx_api.vector_io.models import OpenAIAttachFileRequest
+from ogx_api.vector_io.models import OpenAIAttachFileRequest, OpenAIUpdateVectorStoreFileRequest
 
 
 def _make_store_info():
@@ -204,3 +205,42 @@ class TestDeleteExtractedImageFiles:
 
         deleted_ids = [call.args[0].file_id for call in files_api.openai_delete_file.await_args_list]
         assert deleted_ids == ["file-a", "file-b"]
+
+
+class TestUnknownVectorStoreFileReturns404:
+    """Looking up or updating a file_id that is not in store_info["file_ids"] must surface as a
+    clean HTTP 404, not a bare ValueError that bubbles up as a 500 ASGI traceback. This is the
+    downstream of the MPO ingestion failure: a file fails docling, never reaches
+    store_info["file_ids"], and the client poll then hits this branch."""
+
+    def _mixin(self) -> "MockVectorStoreMixin":
+        return MockVectorStoreMixin(
+            inference_api=AsyncMock(),
+            files_api=AsyncMock(),
+            kvstore=AsyncMock(),
+            file_processor_api=None,
+        )
+
+    async def test_retrieve_unknown_file_id_raises_http_404(self) -> None:
+        mixin = self._mixin()
+        mixin.openai_vector_stores["vs_present"] = _make_store_info()
+
+        with pytest.raises(HTTPException) as excinfo:
+            await mixin.openai_retrieve_vector_store_file(vector_store_id="vs_present", file_id="file-missing")
+
+        assert excinfo.value.status_code == 404
+        assert "file-missing" in excinfo.value.detail
+
+    async def test_update_unknown_file_id_raises_http_404(self) -> None:
+        mixin = self._mixin()
+        mixin.openai_vector_stores["vs_present"] = _make_store_info()
+
+        with pytest.raises(HTTPException) as excinfo:
+            await mixin.openai_update_vector_store_file(
+                vector_store_id="vs_present",
+                file_id="file-missing",
+                request=OpenAIUpdateVectorStoreFileRequest(attributes={}),
+            )
+
+        assert excinfo.value.status_code == 404
+        assert "file-missing" in excinfo.value.detail

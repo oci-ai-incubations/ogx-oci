@@ -643,3 +643,136 @@ class TestProcessFileImageSelfPictureFallback:
         # Caption disabled and no caption available — fallback body is the filename label
         assert response.chunks[0].content == "Image: 11.jpg"
         assert json.loads(response.chunks[0].metadata[IMAGE_FILE_IDS_METADATA_KEY]) == ["file-src"]
+
+
+def _make_mpo_bytes() -> bytes:
+    """Encode two frames as MPO so Pillow re-opens it with format=='MPO'.
+
+    iPhone HDR / portrait / live-photo shots use this format; docling's PILImageBackend
+    rejects it by default.
+    """
+    import io as _io
+
+    primary = Image.new("RGB", (32, 32), (255, 0, 0))
+    secondary = Image.new("RGB", (32, 32), (0, 255, 0))
+    buf = _io.BytesIO()
+    primary.save(buf, format="MPO", save_all=True, append_images=[secondary])
+    return buf.getvalue()
+
+
+def _make_jpeg_bytes() -> bytes:
+    import io as _io
+
+    buf = _io.BytesIO()
+    Image.new("RGB", (32, 32), (0, 0, 255)).save(buf, format="JPEG", quality=90)
+    return buf.getvalue()
+
+
+class TestCoerceMpoToJpeg:
+    """MPO (multi-picture JPEG, iPhone HDR shots) must be rewritten to plain JPEG before docling
+    sees it, or docling's PILImageBackend rejects it with ConversionError."""
+
+    def test_rewrites_mpo_to_jpeg(self) -> None:
+        import io as _io
+
+        from ogx.providers.inline.file_processor.docling.docling import _coerce_mpo_to_jpeg
+
+        mpo_bytes = _make_mpo_bytes()
+        # Sanity: input really is MPO
+        assert Image.open(_io.BytesIO(mpo_bytes)).format == "MPO"
+
+        out = _coerce_mpo_to_jpeg(mpo_bytes)
+
+        assert out is not mpo_bytes
+        assert Image.open(_io.BytesIO(out)).format == "JPEG"
+
+    def test_passes_through_plain_jpeg(self) -> None:
+        from ogx.providers.inline.file_processor.docling.docling import _coerce_mpo_to_jpeg
+
+        jpeg = _make_jpeg_bytes()
+        out = _coerce_mpo_to_jpeg(jpeg)
+
+        # Short-circuit before re-encode — return the original bytes object.
+        assert out is jpeg
+
+    def test_passes_through_unreadable_bytes(self) -> None:
+        from ogx.providers.inline.file_processor.docling.docling import _coerce_mpo_to_jpeg
+
+        garbage = b"this is not an image"
+        assert _coerce_mpo_to_jpeg(garbage) is garbage
+
+
+class TestProcessFileMpoCoercion:
+    """process_file must route image uploads through _coerce_mpo_to_jpeg before docling sees them."""
+
+    async def test_mpo_upload_is_coerced_before_convert(self) -> None:
+        from ogx_api.file_processors import ProcessFileRequest
+
+        cfg = DoclingFileProcessorConfig(caption_images=False)
+
+        mpo_bytes = _make_mpo_bytes()
+
+        files_api = AsyncMock()
+        files_api.openai_retrieve_file = AsyncMock(return_value=SimpleNamespace(filename="IMG_9028.JPG"))
+        files_api.openai_retrieve_file_content = AsyncMock(return_value=SimpleNamespace(body=mpo_bytes))
+
+        processor = DoclingFileProcessor(cfg, files_api=files_api, inference_api=None)
+
+        empty_doc = SimpleNamespace(
+            iterate_items=lambda: [],
+            num_pages=lambda: 1,
+            export_to_markdown=lambda: "",
+        )
+
+        # Capture what docling actually receives — the converted file on disk must be JPEG.
+        observed_formats: list[str] = []
+
+        def _capture_format(path: str) -> SimpleNamespace:
+            with open(path, "rb") as fh:
+                observed_formats.append(Image.open(fh).format or "")
+            return SimpleNamespace(document=empty_doc)
+
+        fake_converter = SimpleNamespace(convert=_capture_format)
+
+        with patch.object(processor, "_build_converter", return_value=fake_converter):
+            await processor.process_file(
+                ProcessFileRequest(file_id="file-src", chunking_strategy=None),
+                file=None,
+            )
+
+        assert observed_formats == ["JPEG"]
+
+    async def test_non_image_upload_skips_coercion(self) -> None:
+        """PDFs / DOCX must not be probed by Pillow — the suffix gate skips coercion entirely."""
+        from ogx_api.file_processors import ProcessFileRequest
+
+        cfg = DoclingFileProcessorConfig(caption_images=False)
+
+        files_api = AsyncMock()
+        files_api.openai_retrieve_file = AsyncMock(return_value=SimpleNamespace(filename="report.pdf"))
+        files_api.openai_retrieve_file_content = AsyncMock(return_value=SimpleNamespace(body=b"%PDF-1.4 fake"))
+
+        processor = DoclingFileProcessor(cfg, files_api=files_api, inference_api=None)
+
+        empty_doc = SimpleNamespace(
+            iterate_items=lambda: [],
+            num_pages=lambda: 1,
+            export_to_markdown=lambda: "",
+        )
+        fake_converter = SimpleNamespace(convert=lambda _path: SimpleNamespace(document=empty_doc))
+
+        with (
+            patch.object(processor, "_build_converter", return_value=fake_converter),
+            patch("ogx.providers.inline.file_processor.docling.docling._coerce_mpo_to_jpeg") as coerce_mock,
+        ):
+            try:
+                await processor.process_file(
+                    ProcessFileRequest(file_id="file-src", chunking_strategy=None),
+                    file=None,
+                )
+            except Exception:
+                # Downstream chunk-building may complain on the empty PDF doc — we only care
+                # about whether the coercion gate fired.
+                pass
+
+        coerce_mock.assert_not_called()
