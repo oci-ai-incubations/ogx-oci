@@ -1191,7 +1191,10 @@ class OpenAIVectorStoreMixin(ABC):
 
         store_info = self.openai_vector_stores[vector_store_id]
         if file_id not in store_info["file_ids"]:
-            raise ValueError(f"File {file_id} not found in vector store {vector_store_id}")
+            raise HTTPException(
+                status_code=404,
+                detail=f"Failed to retrieve vector store file: file {file_id} not found in vector store {vector_store_id}",
+            )
 
         file_info = await self._load_openai_vector_store_file(vector_store_id, file_id)
         return VectorStoreFileObject(**file_info)
@@ -1236,7 +1239,10 @@ class OpenAIVectorStoreMixin(ABC):
 
         store_info = self.openai_vector_stores[vector_store_id]
         if file_id not in store_info["file_ids"]:
-            raise ValueError(f"File {file_id} not found in vector store {vector_store_id}")
+            raise HTTPException(
+                status_code=404,
+                detail=f"Failed to retrieve vector store file: file {file_id} not found in vector store {vector_store_id}",
+            )
 
         file_info = await self._load_openai_vector_store_file(vector_store_id, file_id)
         file_info["attributes"] = request.attributes

@@ -73,6 +73,7 @@ dependencies = [
     "oci>=2.173.1",
     "docling>=2.93.0",
     "oracledb>=4.0.0",
+    "pillow>=12.2.0",
 ]
 
 [project.optional-dependencies]

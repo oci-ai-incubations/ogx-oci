@@ -14,6 +14,7 @@ import uuid
 from typing import Any, NamedTuple
 
 from fastapi import UploadFile
+from PIL import Image, UnidentifiedImageError
 
 # `docling-core` ships only the lightweight type definitions; the heavy `docling` package
 # (DocumentConverter, HybridChunker) is imported lazily inside the methods that need it. This
@@ -142,6 +143,13 @@ class DoclingFileProcessor:
 
         # Preserve original file extension so DocumentConverter can detect the format
         suffix = os.path.splitext(filename)[1] or ".bin"
+
+        # iPhone HDR / portrait / live-photo shots arrive as MPO (multi-frame JPEG). Docling's
+        # PILImageBackend whitelists Pillow's `.format` string and rejects "MPO", so coerce to
+        # plain JPEG using the first embedded frame before handing off.
+        if _is_image_input_filename(filename):
+            content = _coerce_mpo_to_jpeg(content)
+
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=True) as tmp:
             tmp.write(content)
             tmp.flush()
@@ -613,6 +621,25 @@ class DoclingFileProcessor:
 def _is_image_input_filename(filename: str) -> bool:
     """Return True when the filename suffix is one docling routes through InputFormat.IMAGE."""
     return os.path.splitext(filename)[1].lower() in _IMAGE_INPUT_SUFFIXES
+
+
+def _coerce_mpo_to_jpeg(content: bytes) -> bytes:
+    """Return JPEG bytes for an MPO blob, or the original bytes unchanged.
+
+    MPO files carry a JPEG magic prefix but Pillow reports format=="MPO", which docling's
+    PILImageBackend rejects with ConversionError("File format not allowed: ..."). Re-encoding
+    the first embedded frame yields a single-frame JPEG that the backend accepts.
+    """
+    try:
+        with Image.open(io.BytesIO(content)) as probe:
+            if probe.format != "MPO":
+                return content
+            probe.seek(0)
+            buf = io.BytesIO()
+            probe.convert("RGB").save(buf, format="JPEG", quality=95)
+            return buf.getvalue()
+    except (UnidentifiedImageError, OSError):
+        return content
 
 
 def _detect_image_mime(image_bytes: bytes) -> str:
