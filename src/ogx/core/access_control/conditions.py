@@ -134,6 +134,28 @@ class ResourceIsUnowned:
         return "resource is unowned"
 
 
+class ResourceInUserList:
+    """Condition that checks if the resource's identifier appears in a named user attribute list.
+
+    Unlike the other conditions, this matches on a property of the *resource* (its
+    identifier) against a list carried in a *user* attribute. It bridges an external
+    grant system: an upstream auth service issues the set of resource ids a user has
+    been granted, and a policy rule can then permit actions on exactly those resources
+    (e.g. 'resource in user collections' permits access to vector stores whose id the
+    user was granted, even though they neither own them nor have an admin role)."""
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def matches(self, resource: ProtectedResource, user: User) -> bool:
+        if user.attributes and self.name in user.attributes:
+            return resource.identifier in user.attributes[self.name]
+        return False
+
+    def __repr__(self) -> str:
+        return f"resource in user {self.name}"
+
+
 def parse_condition(condition: str) -> Condition:
     """Parse a condition string into a Condition object.
 
@@ -162,6 +184,8 @@ def parse_condition(condition: str) -> Condition:
             return UserNotInOwnersList(name)
         case ["resource", "is", "unowned"]:
             return ResourceIsUnowned()
+        case ["resource", "in", "user", name]:
+            return ResourceInUserList(name)
         case _:
             raise ValueError(f"Invalid condition: {condition}")
 
