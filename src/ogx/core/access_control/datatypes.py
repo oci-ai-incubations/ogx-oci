@@ -74,6 +74,7 @@ class AccessRule(BaseModel):
     - 'user is not owner'
     - 'user in owners <attr-name>'
     - 'user not in owners <attr-name>'
+    - 'resource in user <attr-name>'
 
     Rules are tested in order to find a match. If a match is found, the request is
     permitted or forbidden depending on the type of rule. If no match is found, the

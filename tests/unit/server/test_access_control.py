@@ -503,6 +503,38 @@ def test_is_not_owner():
     assert not is_action_allowed(policy, "read", model, User("user-4", None))
 
 
+def test_resource_in_user_list():
+    # Mirrors the auth-service -> OGX collection-grant bridge: the upstream auth
+    # service issues the set of granted resource ids as a "collections" attribute,
+    # and this rule permits read on exactly those resources even when the user is
+    # neither the owner nor an admin.
+    config = """
+    - permit:
+        actions: [read]
+      when: resource in user collections
+    """
+    policy = TypeAdapter(list[AccessRule]).validate_python(yaml.safe_load(config))
+    granted = ModelWithOwner(
+        identifier="vs_5ceb9ddd-ed3e-4fd8-aeab-2864a8976d37",
+        provider_id="myprovider",
+        model_type=ModelType.llm,
+        owner=User("admin-1", {"roles": ["admin"]}),
+    )
+    other = ModelWithOwner(
+        identifier="vs_other",
+        provider_id="myprovider",
+        model_type=ModelType.llm,
+        owner=User("admin-1", {"roles": ["admin"]}),
+    )
+    foobar = User("21", {"roles": ["user"], "collections": ["vs_5ceb9ddd-ed3e-4fd8-aeab-2864a8976d37"]})
+    # granted collection is visible; a non-granted one is not
+    assert is_action_allowed(policy, "read", granted, foobar)
+    assert not is_action_allowed(policy, "read", other, foobar)
+    # a user with no collection grants sees neither
+    assert not is_action_allowed(policy, "read", granted, User("22", {"roles": ["user"]}))
+    assert not is_action_allowed(policy, "read", granted, User("23", None))
+
+
 def test_invalid_rule_permit_and_forbid_both_specified():
     config = """
     - permit:
@@ -553,6 +585,7 @@ def test_invalid_condition():
         "user with default not in namespaces",
         "user in owners roles",
         "user not in owners projects",
+        "resource in user collections",
     ],
 )
 def test_condition_reprs(condition):
