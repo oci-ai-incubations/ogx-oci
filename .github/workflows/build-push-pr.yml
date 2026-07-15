@@ -43,12 +43,12 @@ jobs:
             -f containers/Containerfile \
             --build-arg INSTALL_MODE=editable \
             --build-arg DISTRO_NAME=oci \
-            -t "${{ env.IMAGE_NAME }}":pr-${{ steps.short-sha.outputs.value }} \
+            -t "${{ env.IMAGE_NAME }}":${{ steps.short-sha.outputs.value }} \
             .
 
       - name: Tag and Push Docker Image
         env:
           IMAGE_REMOTE: "ord.ocir.io/${{ secrets.OCI_TENANCY_NAMESPACE }}/${{ env.IMAGE_NAME }}"
         run: |
-          docker tag "${{ env.IMAGE_NAME }}:pr-${{ steps.short-sha.outputs.value }}" "${{ env.IMAGE_REMOTE }}:pr-${{ steps.short-sha.outputs.value }}"
-          docker push "${{ env.IMAGE_REMOTE }}:pr-${{ steps.short-sha.outputs.value }}"
+          docker tag "${{ env.IMAGE_NAME }}:${{ steps.short-sha.outputs.value }}" "${{ env.IMAGE_REMOTE }}:${{ steps.short-sha.outputs.value }}"
+          docker push "${{ env.IMAGE_REMOTE }}:${{ steps.short-sha.outputs.value }}"
