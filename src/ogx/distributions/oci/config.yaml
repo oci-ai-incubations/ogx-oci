@@ -6,7 +6,6 @@ apis:
 - files
 - inference
 - responses
-- safety
 - tool_runtime
 - vector_io
 providers:
@@ -43,21 +42,11 @@ providers:
       persistence:
         namespace: vector_io::oci26ai
         backend: kv_default
-  safety:
-  - provider_id: code-scanner
-    provider_type: inline::code-scanner
-  - provider_id: prompt-guard
-    provider_type: inline::prompt-guard
-    config:
-      guard_type: injection
   responses:
   - provider_id: builtin
     provider_type: inline::builtin
     config:
       persistence:
-        agent_state:
-          namespace: agents
-          backend: kv_default
         responses:
           table_name: responses
           backend: sql_default
@@ -112,13 +101,16 @@ providers:
       caption_images: false
       caption_model: null
       caption_max_tokens: 180
+      do_ocr: true
+      vlm_model: null
+      vlm_preset: granite_docling
   batches:
   - provider_id: reference
     provider_type: inline::reference
     config:
-      kvstore:
-        namespace: batches
-        backend: kv_default
+      sqlstore:
+        table_name: batches
+        backend: sql_default
 storage:
   backends:
     kv_default:
@@ -140,15 +132,14 @@ storage:
       table_name: openai_conversations
       backend: sql_default
     prompts:
-      namespace: prompts
-      backend: kv_default
+      table_name: prompts
+      backend: sql_default
     connectors:
-      namespace: connectors
-      backend: kv_default
+      table_name: connectors
+      backend: sql_default
 registered_resources:
   models: []
-  shields: []
-  vector_dbs: []
+  vector_stores: []
 server:
   port: 8321
   auth:

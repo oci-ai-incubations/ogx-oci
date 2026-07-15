@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import struct
 import time
@@ -132,7 +133,7 @@ class GeminiCompletionSamplingParams(BaseModel):
             candidate_count=params.n,
             max_output_tokens=params.max_tokens,
             stop_sequences=stop_sequences,
-            response_logprobs=params.logprobs or None,
+            response_logprobs=params.logprobs is not None and params.logprobs > 0,
         )
 
 
@@ -191,9 +192,9 @@ class VertexAIInferenceAdapter(NeedsRequestProviderData, BaseModel):
             # Don't create the client here - it will be created lazily on first use
             # This avoids calling _ensure_http_options() in the temporary startup event loop
             logger.info(
-                "VertexAI provider initialized for project=%s location=%s (client will be created on first use)",
-                self.config.project,
-                self.config.location,
+                "VertexAI provider initialized (client will be created on first use)",
+                project=self.config.project,
+                location=self.config.location,
             )
         except Exception:
             logger.warning(
@@ -264,8 +265,8 @@ class VertexAIInferenceAdapter(NeedsRequestProviderData, BaseModel):
             await self.list_models()
         except Exception:
             logger.warning(
-                "Failed to list VertexAI models for availability check; accepting model '%s' without validation.",
-                model,
+                "Failed to list VertexAI models for availability check; accepting model without validation.",
+                model=model,
                 exc_info=True,
             )
             return True
@@ -314,7 +315,30 @@ class VertexAIInferenceAdapter(NeedsRequestProviderData, BaseModel):
                 access_token = self.config.auth_credential.get_secret_value() if self.config.auth_credential else None
                 return self._create_client(project=project, location=location, access_token=access_token)
 
-        # Lazily create the default client on first use
+        # Lazily create the default client on first use.
+        # If we already have a cached client, verify it is still usable before
+        # returning it — a previous request may have left connections tied to an
+        # event loop that is now closed (e.g., after a temporary startup loop).
+        if self._default_client is not None:
+            try:
+                # Touch the underlying httpx client to detect event loop binding
+                # issues.  If the client was created in a now-closed loop,
+                # accessing its transport raises RuntimeError.
+                if self._http_options is not None:
+                    _client = getattr(self._http_options, "httpx_async_client", None)
+                    if _client is not None and _client.is_closed:
+                        logger.info(
+                            "VertexAI default client transport is closed; recreating",
+                            project=self.config.project,
+                        )
+                        self._default_client = None
+            except RuntimeError:
+                logger.warning(
+                    "VertexAI default client is bound to a closed event loop; recreating",
+                    project=self.config.project,
+                )
+                self._default_client = None
+
         if self._default_client is None:
             access_token = self.config.auth_credential.get_secret_value() if self.config.auth_credential else None
             try:
@@ -385,8 +409,8 @@ class VertexAIInferenceAdapter(NeedsRequestProviderData, BaseModel):
             provider_model_ids = await self.list_provider_model_ids()
         except Exception:
             logger.error(
-                "%s.list_provider_model_ids() failed",
-                self.__class__.__name__,
+                "Failed to list provider model IDs",
+                provider=self.__class__.__name__,
                 exc_info=True,
             )
             raise
@@ -713,8 +737,6 @@ class VertexAIInferenceAdapter(NeedsRequestProviderData, BaseModel):
             logger.warning("VertexAI does not support prompt_cache_key; this parameter will be ignored.")
         if params.user is not None:
             logger.debug("VertexAI chat completion ignores the 'user' parameter (it is used in embeddings requests).")
-        if params.safety_identifier is not None:
-            logger.debug("VertexAI does not support safety_identifier; this parameter will be ignored.")
 
     def _resolve_deprecated_tools(
         self,
@@ -744,7 +766,7 @@ class VertexAIInferenceAdapter(NeedsRequestProviderData, BaseModel):
         self._warn_unsupported_chat_params(params)
         tools, tool_choice = self._resolve_deprecated_tools(params)
 
-        messages = [await self._localize_image_url(message) for message in params.messages]
+        messages = list(await asyncio.gather(*[self._localize_image_url(message) for message in params.messages]))
         system_instruction, contents = converters.convert_openai_messages_to_gemini(messages)
         tools_input = converters.convert_openai_tools_to_gemini(tools)
         config = self._build_generation_config(
@@ -908,8 +930,8 @@ class VertexAIInferenceAdapter(NeedsRequestProviderData, BaseModel):
         # passthrough. Log and ignore extra body parameters rather than silently dropping.
         if params.model_extra:
             logger.debug(
-                "VertexAI embeddings does not support extra body parameters; model_extra will be ignored: %s",
-                list(params.model_extra.keys()),
+                "VertexAI embeddings does not support extra body parameters; model_extra will be ignored",
+                ignored_keys=list(params.model_extra.keys()),
             )
 
         provider_model_id = await self._get_provider_model_id(params.model)

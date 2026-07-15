@@ -4,6 +4,7 @@
 # This source code is licensed under the terms described in the LICENSE file in
 # the root directory of this source tree.
 
+import asyncio
 import base64
 import io
 import json
@@ -28,13 +29,20 @@ except ImportError:  # pragma: no cover - fallback only exercised when docling-c
 
 
 from ogx.log import get_logger
+from ogx.providers.inline.file_processor.zip_utils import validate_zip_content
+from ogx.providers.utils.files.response import response_body_bytes
 from ogx.providers.utils.vector_io.vector_utils import generate_chunk_id
 from ogx_api.file_processors import (
     EXTRACTED_IMAGE_FILE_IDS_METADATA_KEY,
     ProcessFileRequest,
     ProcessFileResponse,
 )
-from ogx_api.files import OpenAIFilePurpose, RetrieveFileContentRequest, RetrieveFileRequest, UploadFileRequest
+from ogx_api.files import (
+    OpenAIFileUploadPurpose,
+    RetrieveFileContentRequest,
+    RetrieveFileRequest,
+    UploadFileRequest,
+)
 from ogx_api.vector_io import (
     Chunk,
     ChunkMetadata,
@@ -91,6 +99,20 @@ class ExtractedPicture(NamedTuple):
     caption: str | None = None
 
 
+DOCLING_MIME_TYPES = {
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # .docx
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # .pptx
+    "text/html",
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/bmp",
+    "image/tiff",
+    "image/webp",
+}
+
+
 class DoclingFileProcessor:
     """Docling-based file processor with structure-aware chunking.
 
@@ -109,6 +131,82 @@ class DoclingFileProcessor:
         self.config = config
         self.files_api = files_api
         self.inference_api = inference_api
+        self._vlm_enabled = False
+
+        # Fail fast on an invalid vlm_preset at construction rather than deferring to the first
+        # process_file call. Only when a VLM pipeline would actually be built (vlm_model set and an
+        # inference provider available) — this is the only branch that touches docling's heavy VLM
+        # imports, so the common non-VLM path stays import-free at construction time.
+        if self.config.vlm_model and self.inference_api:
+            self._validate_vlm_preset()
+
+    def supported_mime_types(self) -> set[str] | None:
+        return DOCLING_MIME_TYPES
+
+    def _validate_vlm_preset(self) -> None:
+        from docling.datamodel.pipeline_options import VlmConvertOptions
+
+        available_presets = list(VlmConvertOptions._presets.keys())
+        if self.config.vlm_preset not in available_presets:
+            raise ValueError(f"Invalid vlm_preset '{self.config.vlm_preset}'. Available presets: {available_presets}")
+
+    def _build_vlm_converter(self) -> Any:
+        # docling's VLM pipeline drags in the full docling/torch/HuggingFace stack; import it
+        # lazily so deployments that never enable vlm_model pay no import cost at module load.
+        from docling.datamodel.base_models import InputFormat
+        from docling.datamodel.pipeline_options import VlmConvertOptions, VlmPipelineOptions
+        from docling.datamodel.vlm_engine_options import ApiVlmEngineOptions, VlmEngineType
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+        from docling.pipeline.vlm_pipeline import VlmPipeline
+
+        from ogx.providers.inline.file_processor.docling.vlm_engine import OgxInferenceVlmEngine
+
+        assert self.config.vlm_model is not None
+
+        self._validate_vlm_preset()
+
+        vlm_options = VlmConvertOptions.from_preset(
+            self.config.vlm_preset,
+            engine_options=ApiVlmEngineOptions(engine_type=VlmEngineType.API_OPENAI),
+        )
+
+        vlm_pipeline_options = VlmPipelineOptions(
+            vlm_options=vlm_options,
+            enable_remote_services=True,
+        )
+
+        converter = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(
+                    pipeline_cls=VlmPipeline,
+                    pipeline_options=vlm_pipeline_options,
+                )
+            }
+        )
+
+        converter.initialize_pipeline(InputFormat.PDF)
+
+        event_loop = asyncio.get_event_loop()
+        ogx_engine = OgxInferenceVlmEngine(
+            inference_api=self.inference_api,
+            model=self.config.vlm_model,
+            event_loop=event_loop,
+        )
+
+        for pipeline in converter.initialized_pipelines.values():
+            for stage in getattr(pipeline, "build_pipe", []):
+                if hasattr(stage, "engine"):
+                    stage.engine = ogx_engine
+                    break
+
+        self._vlm_enabled = True
+        log.info(
+            "VLM pipeline enabled",
+            vlm_model=self.config.vlm_model,
+            vlm_preset=self.config.vlm_preset,
+        )
+
+        return converter
 
     async def process_file(
         self,
@@ -139,7 +237,9 @@ class DoclingFileProcessor:
             content_response = await self.files_api.openai_retrieve_file_content(
                 RetrieveFileContentRequest(file_id=file_id)
             )
-            content = content_response.body
+            content = await response_body_bytes(content_response)
+
+        validate_zip_content(content, filename)
 
         # Preserve original file extension so DocumentConverter can detect the format
         suffix = os.path.splitext(filename)[1] or ".bin"
@@ -184,11 +284,12 @@ class DoclingFileProcessor:
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
+        extraction_method = "docling-vlm" if self._vlm_enabled else "docling"
         response_metadata: dict[str, Any] = {
             "processor": "docling",
             "processing_time_ms": processing_time_ms,
             "page_count": page_count,
-            "extraction_method": "docling",
+            "extraction_method": extraction_method,
             "file_size_bytes": len(content),
             "extracted_image_count": len(pictures),
             # Full list of uploaded image file_ids — consumers (vector_store mixin) use this to
@@ -196,6 +297,9 @@ class DoclingFileProcessor:
             # parent vector_store_file cascades cleanup of the children.
             EXTRACTED_IMAGE_FILE_IDS_METADATA_KEY: [p.file_id for p in pictures],
         }
+        if self._vlm_enabled:
+            response_metadata["vlm_model"] = self.config.vlm_model
+            response_metadata["vlm_preset"] = self.config.vlm_preset
 
         return ProcessFileResponse(chunks=chunks, metadata=response_metadata)
 
@@ -209,6 +313,17 @@ class DoclingFileProcessor:
         from docling.datamodel.base_models import InputFormat
         from docling.datamodel.pipeline_options import PdfPipelineOptions
         from docling.document_converter import DocumentConverter, ImageFormatOption, PdfFormatOption
+
+        # When a vision model is configured, route to the VLM pipeline instead of the
+        # picture-extraction pipeline. The two are mutually exclusive: VLM transcribes the whole
+        # document via the model, while the standard path rasterises embedded pictures.
+        if self.config.vlm_model and self.inference_api:
+            return self._build_vlm_converter()
+        if self.config.vlm_model and not self.inference_api:
+            log.warning(
+                "vlm_model is configured but no inference provider is available, falling back to standard pipeline",
+                vlm_model=self.config.vlm_model,
+            )
 
         if not self.config.extract_images:
             return DocumentConverter()
@@ -320,7 +435,7 @@ class DoclingFileProcessor:
         )
 
     async def _upload_picture_bytes(self, png_bytes: bytes, base_name: str, picture_ref: str) -> Any:
-        """Upload PNG bytes to the Files API as an OpenAIFilePurpose.ASSISTANTS file."""
+        """Upload PNG bytes to the Files API as an OpenAIFileUploadPurpose.ASSISTANTS file."""
         safe_ref = picture_ref.replace("#", "").replace("/", "_").strip("_")
         upload_filename = f"{base_name}_{safe_ref}.png"
 
@@ -332,7 +447,7 @@ class DoclingFileProcessor:
 
         assert self.files_api is not None, "Failed to upload picture bytes: files_api is not configured"
         return await self.files_api.openai_upload_file(
-            request=UploadFileRequest(purpose=OpenAIFilePurpose.ASSISTANTS),
+            request=UploadFileRequest(purpose=OpenAIFileUploadPurpose.ASSISTANTS),
             file=upload,
         )
 

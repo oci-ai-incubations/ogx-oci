@@ -81,7 +81,7 @@ class Chunk(BaseModel):
                 raise TypeError(f"metadata['document_id'] must be a string, got {type(doc_id).__name__}: {doc_id!r}")
             return doc_id
 
-        # Fall back to chunk_metadata if available (Pydantic ensures type safety)
+        # Fall back to chunk_metadata if available (Pydantic enforces type consistency)
         if self.chunk_metadata is not None:
             return self.chunk_metadata.document_id
 
@@ -498,8 +498,9 @@ class SearchRankingOptions(BaseModel):
         Keys can be "vector", "keyword", "neural". Values should sum to 1.0.
         Used when combining algorithm-based reranking with neural reranking.
         Example: {"vector": 0.3, "keyword": 0.3, "neural": 0.4}
-    :param model: (Optional) Model identifier for neural reranker (e.g., "transformers/Qwen/Qwen3-Reranker-0.6B").
-        Required when ranker="neural" or when weights contains "neural".
+    :param model: (Optional) Model identifier for neural reranker
+        (e.g., "sentence-transformers/Qwen/Qwen3-Reranker-0.6B"). Required when ranker="neural" or when
+        weights contains "neural".
     """
 
     ranker: str | None = None

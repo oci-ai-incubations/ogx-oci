@@ -15,7 +15,9 @@ from typing import Protocol, runtime_checkable
 
 from .models import (
     AdminListModelsResponse,
+    AnthropicListModelsResponse,
     GetModelRequest,
+    GoogleListModelsResponse,
     ListModelsResponse,
     Model,
     OpenAIListModelsResponse,
@@ -31,6 +33,16 @@ class Models(Protocol):
     async def list_models(self) -> ListModelsResponse: ...
 
     async def openai_list_models(self) -> OpenAIListModelsResponse: ...
+
+    async def anthropic_list_models(
+        self,
+        *,
+        before_id: str | None = None,
+        after_id: str | None = None,
+        limit: int | None = None,
+    ) -> AnthropicListModelsResponse: ...
+
+    async def google_list_models(self) -> GoogleListModelsResponse: ...
 
     async def get_model(self, request: GetModelRequest) -> Model: ...
 

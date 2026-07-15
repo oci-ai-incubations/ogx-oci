@@ -13,6 +13,7 @@ from ogx_api import (
     DeleteFileRequest,
     ListFilesRequest,
     OpenAIFilePurpose,
+    OpenAIFileUploadPurpose,
     ResourceNotFoundError,
     RetrieveFileContentRequest,
     RetrieveFileRequest,
@@ -76,7 +77,10 @@ class TestS3FilesImpl:
             request=RetrieveFileContentRequest(file_id=uploaded.id)
         )
 
-        assert response.body == sample_text_file.content
+        body = b""
+        async for chunk in response.body_iterator:
+            body += chunk
+        assert body == sample_text_file.content
         assert response.headers["Content-Disposition"] == f'attachment; filename="{sample_text_file.filename}"'
 
     async def test_delete_file(self, s3_provider, sample_text_file, s3_config, s3_client):
@@ -209,7 +213,7 @@ class TestS3FilesImpl:
         files_list = await s3_provider.openai_list_files(request=ListFilesRequest())
         assert len(files_list.data) == 0, "No file metadata should remain after failed upload"
 
-    @pytest.mark.parametrize("purpose", [p for p in OpenAIFilePurpose if p != OpenAIFilePurpose.BATCH])
+    @pytest.mark.parametrize("purpose", [p for p in OpenAIFileUploadPurpose if p != OpenAIFileUploadPurpose.BATCH])
     async def test_default_no_expiration(self, s3_provider, sample_text_file, purpose):
         """Test that by default files have no expiration."""
         sample_text_file.filename = "test_default_no_expiration"

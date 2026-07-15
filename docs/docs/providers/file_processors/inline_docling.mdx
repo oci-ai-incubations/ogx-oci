@@ -11,6 +11,8 @@ description: |
   - **Layout preservation** — tables, lists, and nested structures are converted to Markdown
   - **Multi-format support** — PDF, DOCX, PPTX, HTML, and images
   - **Better RAG quality** — structured chunks with heading metadata produce more relevant retrieval results
+  - **VLM-based processing** — optionally route Vision Language Model inference through the stack's model-serving
+    infrastructure for richer document understanding (layout analysis, OCR via vision models)
 
   ## Usage
 
@@ -30,6 +32,24 @@ description: |
       provider_type: inline::docling
       config: {}
   ```
+
+  ### Enabling VLM Processing
+
+  To enable VLM-based document processing, set `vlm_model` to a vision model registered with the
+  stack's inference API. The VLM pipeline routes inference through the stack's model-serving
+  infrastructure — no separate GPU resources are needed for document processing.
+
+  ```yaml
+  file_processors:
+    - provider_id: docling
+      provider_type: inline::docling
+      config:
+        vlm_model: granite-docling-258M
+        vlm_preset: granite_docling
+  ```
+
+  When `vlm_model` is not set or no inference provider is available, the processor gracefully
+  degrades to the standard non-VLM pipeline.
 
   ## Installation
 
@@ -60,6 +80,8 @@ preserves semantic boundaries. It supports PDF, DOCX, PPTX, HTML, and images.
 - **Layout preservation** — tables, lists, and nested structures are converted to Markdown
 - **Multi-format support** — PDF, DOCX, PPTX, HTML, and images
 - **Better RAG quality** — structured chunks with heading metadata produce more relevant retrieval results
+- **VLM-based processing** — optionally route Vision Language Model inference through the stack's model-serving
+  infrastructure for richer document understanding (layout analysis, OCR via vision models)
 
 ## Usage
 
@@ -79,6 +101,24 @@ file_processors:
     provider_type: inline::docling
     config: {}
 ```
+
+### Enabling VLM Processing
+
+To enable VLM-based document processing, set `vlm_model` to a vision model registered with the
+stack's inference API. The VLM pipeline routes inference through the stack's model-serving
+infrastructure — no separate GPU resources are needed for document processing.
+
+```yaml
+file_processors:
+  - provider_id: docling
+    provider_type: inline::docling
+    config:
+      vlm_model: granite-docling-258M
+      vlm_preset: granite_docling
+```
+
+When `vlm_model` is not set or no inference provider is available, the processor gracefully
+degrades to the standard non-VLM pipeline.
 
 ## Installation
 
@@ -104,6 +144,9 @@ See [Docling's documentation](https://docling-project.github.io/docling/) for mo
 | `caption_model` | `str \| None` | No |  | Identifier of the vision-capable model used for captioning. Must be configured when caption_images is True; ignored otherwise. Example: 'oci/meta.llama-3.2-90b-vision-instruct'. |
 | `caption_prompt` | `str` | No | Describe this image in 1-2 sentences. Focus on factual content — visible objects, people, text, layout, setting. Avoid aesthetic adjectives. Output the description directly with no preamble. | Prompt sent alongside each picture to the captioning model. Tune for shorter or longer captions, or to bias toward specific facets (text-in-image OCR, scene description, technical diagrams, etc.). |
 | `caption_max_tokens` | `int` | No | 180 | Upper bound on caption length in tokens. Kept small by default since captions are embedded as chunk text and longer captions dilute retrieval signal. |
+| `do_ocr` | `bool` | No | True | Enable OCR for scanned documents. Set to False for digital PDFs (with embedded text) to improve processing speed by ~3x for non-scanned PDFs. Note: Setting to False on scanned PDFs will result in minimal text extraction. Ignored when vlm_model is set (VLM pipeline handles text extraction). |
+| `vlm_model` | `str \| None` | No |  | Model identifier for VLM-based document processing. When set and an inference provider is available, enables the VLM pipeline for richer document understanding (layout analysis, OCR via vision models). The model must be registered with the stack's inference API. When None (default), uses the standard non-VLM pipeline. |
+| `vlm_preset` | `str` | No | granite_docling | Docling VLM preset controlling prompt template and response format. Must be a valid preset name registered with VlmConvertOptions. The default 'granite_docling' is the recommended preset for production use. |
 
 ## Sample Configuration
 
@@ -116,4 +159,7 @@ min_image_dim_px: 64
 caption_images: false
 caption_model: null
 caption_max_tokens: 180
+do_ocr: true
+vlm_model: null
+vlm_preset: granite_docling
 ```

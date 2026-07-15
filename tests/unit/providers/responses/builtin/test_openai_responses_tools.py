@@ -30,6 +30,7 @@ from ogx_api.openai_responses import (
     OpenAIResponseMessage,
     WebSearchToolTypes,
 )
+from ogx_api.responses.models import CreateResponseRequest
 from ogx_api.tools import ListToolDefsResponse, ToolDef, ToolInvocationResult
 from ogx_api.vector_io import (
     VectorStoreContent,
@@ -73,14 +74,16 @@ async def test_create_openai_response_with_string_input_with_tools(openai_respon
         openai_responses_impl.responses_store.upsert_response_object.reset_mock()
 
         result = await openai_responses_impl.create_openai_response(
-            input=input_text,
-            model=model,
-            temperature=0.1,
-            tools=[
-                OpenAIResponseInputToolWebSearch(
-                    name=tool_name,
-                )
-            ],
+            CreateResponseRequest(
+                input=input_text,
+                model=model,
+                temperature=0.1,
+                tools=[
+                    OpenAIResponseInputToolWebSearch(
+                        type=tool_name,
+                    )
+                ],
+            )
         )
 
         # Verify
@@ -143,19 +146,21 @@ async def test_create_openai_response_with_tool_call_type_none(openai_responses_
 
     # Execute
     result = await openai_responses_impl.create_openai_response(
-        input=input_text,
-        model=model,
-        stream=True,
-        temperature=0.1,
-        tools=[
-            OpenAIResponseInputToolFunction(
-                name="get_weather",
-                description="Get current temperature for a given location.",
-                parameters={
-                    "location": "string",
-                },
-            )
-        ],
+        CreateResponseRequest(
+            input=input_text,
+            model=model,
+            stream=True,
+            temperature=0.1,
+            tools=[
+                OpenAIResponseInputToolFunction(
+                    name="get_weather",
+                    description="Get current temperature for a given location.",
+                    parameters={
+                        "location": "string",
+                    },
+                )
+            ],
+        )
     )
 
     # Check that we got the content from our mocked tool execution result
@@ -241,15 +246,17 @@ async def test_create_openai_response_with_tool_call_function_arguments_none(ope
     # Function does not accept arguments
     mock_inference_api.openai_chat_completion.return_value = fake_stream_toolcall()
     result = await openai_responses_impl.create_openai_response(
-        input=input_text,
-        model=model,
-        stream=True,
-        temperature=0.1,
-        tools=[
-            OpenAIResponseInputToolFunction(
-                name="get_current_time", description="Get current time for system's timezone", parameters={}
-            )
-        ],
+        CreateResponseRequest(
+            input=input_text,
+            model=model,
+            stream=True,
+            temperature=0.1,
+            tools=[
+                OpenAIResponseInputToolFunction(
+                    name="get_current_time", description="Get current time for system's timezone", parameters={}
+                )
+            ],
+        )
     )
     chunks = [chunk async for chunk in result]
     assert [chunk.type for chunk in chunks] == [
@@ -265,17 +272,19 @@ async def test_create_openai_response_with_tool_call_function_arguments_none(ope
     # Function accepts optional arguments
     mock_inference_api.openai_chat_completion.return_value = fake_stream_toolcall()
     result = await openai_responses_impl.create_openai_response(
-        input=input_text,
-        model=model,
-        stream=True,
-        temperature=0.1,
-        tools=[
-            OpenAIResponseInputToolFunction(
-                name="get_current_time",
-                description="Get current time for system's timezone",
-                parameters={"timezone": "string"},
-            )
-        ],
+        CreateResponseRequest(
+            input=input_text,
+            model=model,
+            stream=True,
+            temperature=0.1,
+            tools=[
+                OpenAIResponseInputToolFunction(
+                    name="get_current_time",
+                    description="Get current time for system's timezone",
+                    parameters={"timezone": "string"},
+                )
+            ],
+        )
     )
     chunks = [chunk async for chunk in result]
     assert [chunk.type for chunk in chunks] == [
@@ -291,17 +300,19 @@ async def test_create_openai_response_with_tool_call_function_arguments_none(ope
     # Function accepts optional arguments with additional optional fields
     mock_inference_api.openai_chat_completion.return_value = fake_stream_toolcall()
     result = await openai_responses_impl.create_openai_response(
-        input=input_text,
-        model=model,
-        stream=True,
-        temperature=0.1,
-        tools=[
-            OpenAIResponseInputToolFunction(
-                name="get_current_time",
-                description="Get current time for system's timezone",
-                parameters={"timezone": "string", "location": "string"},
-            )
-        ],
+        CreateResponseRequest(
+            input=input_text,
+            model=model,
+            stream=True,
+            temperature=0.1,
+            tools=[
+                OpenAIResponseInputToolFunction(
+                    name="get_current_time",
+                    description="Get current time for system's timezone",
+                    parameters={"timezone": "string", "location": "string"},
+                )
+            ],
+        )
     )
     chunks = [chunk async for chunk in result]
     assert [chunk.type for chunk in chunks] == [
@@ -328,13 +339,15 @@ async def test_reuse_mcp_tool_list(
     )
 
     res1 = await openai_responses_impl.create_openai_response(
-        input="What is 2+2?",
-        model="meta-llama/Llama-3.1-8B-Instruct",
-        store=True,
-        tools=[
-            OpenAIResponseInputToolFunction(name="fake", parameters=None),
-            OpenAIResponseInputToolMCP(server_label="alabel", server_url="aurl"),
-        ],
+        CreateResponseRequest(
+            input="What is 2+2?",
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            store=True,
+            tools=[
+                OpenAIResponseInputToolFunction(name="fake", parameters=None),
+                OpenAIResponseInputToolMCP(server_label="alabel", server_url="aurl"),
+            ],
+        )
     )
     args = mock_responses_store.upsert_response_object.call_args
     data = args.kwargs["response_object"].model_dump()
@@ -344,13 +357,15 @@ async def test_reuse_mcp_tool_list(
     mock_responses_store.get_response_object.return_value = stored
 
     res2 = await openai_responses_impl.create_openai_response(
-        previous_response_id=res1.id,
-        input="Now what is 3+3?",
-        model="meta-llama/Llama-3.1-8B-Instruct",
-        store=True,
-        tools=[
-            OpenAIResponseInputToolMCP(server_label="alabel", server_url="aurl"),
-        ],
+        CreateResponseRequest(
+            previous_response_id=res1.id,
+            input="Now what is 3+3?",
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            store=True,
+            tools=[
+                OpenAIResponseInputToolMCP(server_label="alabel", server_url="aurl"),
+            ],
+        )
     )
     assert len(mock_inference_api.openai_chat_completion.call_args_list) == 2
     second_call = mock_inference_api.openai_chat_completion.call_args_list[1]
@@ -391,12 +406,14 @@ async def test_mcp_tool_connector_id_resolved_to_server_url(
 
     # Create a response using connector_id instead of server_url
     result = await openai_responses_impl.create_openai_response(
-        input="Test connector resolution",
-        model="meta-llama/Llama-3.1-8B-Instruct",
-        store=True,
-        tools=[
-            OpenAIResponseInputToolMCP(server_label="my-label", connector_id="my-mcp-connector"),
-        ],
+        CreateResponseRequest(
+            input="Test connector resolution",
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            store=True,
+            tools=[
+                OpenAIResponseInputToolMCP(server_label="my-label", connector_id="my-mcp-connector"),
+            ],
+        )
     )
 
     # Verify the connector_id was resolved via the connectors API
@@ -558,6 +575,42 @@ async def test_file_search_results_include_chunk_metadata_attributes(mock_vector
     ]
 
 
+async def test_file_search_works_without_explicit_vector_stores_config(mock_vector_io_api):
+    """Test that file_search works when vector_stores_config is not passed to ToolExecutor."""
+    query = "What is machine learning?"
+    vector_store_id = "test_vector_store"
+
+    mock_vector_io_api.openai_search_vector_store.return_value = VectorStoreSearchResponsePage(
+        search_query=[query],
+        has_more=False,
+        data=[
+            VectorStoreSearchResponse(
+                file_id="doc-123",
+                filename="ml-intro.md",
+                content=[VectorStoreContent(type="text", text="Machine learning is a subset of AI")],
+                score=0.95,
+                attributes={},
+            ),
+        ],
+    )
+
+    tool_executor = ToolExecutor(
+        tool_groups_api=None,  # type: ignore
+        tool_runtime_api=None,  # type: ignore
+        vector_io_api=mock_vector_io_api,
+        mcp_session_manager=None,
+    )
+
+    file_search_tool = OpenAIResponseInputToolFileSearch(vector_store_ids=[vector_store_id])
+    result = await tool_executor._execute_file_search_via_vector_store(
+        query=query,
+        response_file_search_tool=file_search_tool,
+    )
+
+    mock_vector_io_api.openai_search_vector_store.assert_called_once()
+    assert result.content is not None
+
+
 async def test_tool_call_arguments_arrive_in_subsequent_delta(openai_responses_impl, mock_inference_api):
     """Test that tool call arguments are correctly accumulated when the model streams
     arguments=None in the first delta and actual arguments in a subsequent delta.
@@ -623,17 +676,23 @@ async def test_tool_call_arguments_arrive_in_subsequent_delta(openai_responses_i
     mock_inference_api.openai_chat_completion.return_value = fake_stream_vllm_style()
 
     result = await openai_responses_impl.create_openai_response(
-        input=input_text,
-        model=model,
-        stream=True,
-        temperature=0.1,
-        tools=[
-            OpenAIResponseInputToolFunction(
-                name="get_weather",
-                description="Get current temperature for a given location.",
-                parameters={"type": "object", "properties": {"location": {"type": "string"}}, "required": ["location"]},
-            )
-        ],
+        CreateResponseRequest(
+            input=input_text,
+            model=model,
+            stream=True,
+            temperature=0.1,
+            tools=[
+                OpenAIResponseInputToolFunction(
+                    name="get_weather",
+                    description="Get current temperature for a given location.",
+                    parameters={
+                        "type": "object",
+                        "properties": {"location": {"type": "string"}},
+                        "required": ["location"],
+                    },
+                )
+            ],
+        )
     )
     chunks = [chunk async for chunk in result]
 
@@ -727,16 +786,22 @@ async def test_tool_call_arguments_split_across_multiple_deltas(openai_responses
     mock_inference_api.openai_chat_completion.return_value = fake_stream_split_args()
 
     result = await openai_responses_impl.create_openai_response(
-        input=input_text,
-        model=model,
-        stream=True,
-        tools=[
-            OpenAIResponseInputToolFunction(
-                name="get_weather",
-                description="Get current temperature for a given location.",
-                parameters={"type": "object", "properties": {"location": {"type": "string"}}, "required": ["location"]},
-            )
-        ],
+        CreateResponseRequest(
+            input=input_text,
+            model=model,
+            stream=True,
+            tools=[
+                OpenAIResponseInputToolFunction(
+                    name="get_weather",
+                    description="Get current temperature for a given location.",
+                    parameters={
+                        "type": "object",
+                        "properties": {"location": {"type": "string"}},
+                        "required": ["location"],
+                    },
+                )
+            ],
+        )
     )
     chunks = [chunk async for chunk in result]
 
@@ -784,16 +849,18 @@ async def test_tool_call_no_parameters_still_returns_empty_json(openai_responses
     mock_inference_api.openai_chat_completion.return_value = fake_stream_no_args()
 
     result = await openai_responses_impl.create_openai_response(
-        input=input_text,
-        model=model,
-        stream=True,
-        tools=[
-            OpenAIResponseInputToolFunction(
-                name="get_current_time",
-                description="Get the current time",
-                parameters={},
-            )
-        ],
+        CreateResponseRequest(
+            input=input_text,
+            model=model,
+            stream=True,
+            tools=[
+                OpenAIResponseInputToolFunction(
+                    name="get_current_time",
+                    description="Get the current time",
+                    parameters={},
+                )
+            ],
+        )
     )
     chunks = [chunk async for chunk in result]
 
@@ -818,18 +885,24 @@ async def test_function_tool_strict_field_excluded_when_none(openai_responses_im
 
     # Execute with function tool that has strict=None (default)
     await openai_responses_impl.create_openai_response(
-        input=input_text,
-        model=model,
-        stream=False,
-        tools=[
-            OpenAIResponseInputToolFunction(
-                type="function",
-                name="get_weather",
-                description="Get weather information",
-                parameters={"type": "object", "properties": {"location": {"type": "string"}}, "required": ["location"]},
-                # strict is None by default
-            )
-        ],
+        CreateResponseRequest(
+            input=input_text,
+            model=model,
+            stream=False,
+            tools=[
+                OpenAIResponseInputToolFunction(
+                    type="function",
+                    name="get_weather",
+                    description="Get weather information",
+                    parameters={
+                        "type": "object",
+                        "properties": {"location": {"type": "string"}},
+                        "required": ["location"],
+                    },
+                    # strict is None by default
+                )
+            ],
+        )
     )
 
     # Verify the call was made
@@ -863,18 +936,24 @@ async def test_function_tool_strict_field_included_when_set(openai_responses_imp
 
     # Execute with function tool that has strict=True
     await openai_responses_impl.create_openai_response(
-        input=input_text,
-        model=model,
-        stream=False,
-        tools=[
-            OpenAIResponseInputToolFunction(
-                type="function",
-                name="get_weather",
-                description="Get weather information",
-                parameters={"type": "object", "properties": {"location": {"type": "string"}}, "required": ["location"]},
-                strict=True,  # Explicitly set to True
-            )
-        ],
+        CreateResponseRequest(
+            input=input_text,
+            model=model,
+            stream=False,
+            tools=[
+                OpenAIResponseInputToolFunction(
+                    type="function",
+                    name="get_weather",
+                    description="Get weather information",
+                    parameters={
+                        "type": "object",
+                        "properties": {"location": {"type": "string"}},
+                        "required": ["location"],
+                    },
+                    strict=True,  # Explicitly set to True
+                )
+            ],
+        )
     )
 
     # Verify the call was made
@@ -905,18 +984,24 @@ async def test_function_tool_strict_false_included(openai_responses_impl, mock_i
 
     # Execute with function tool that has strict=False
     await openai_responses_impl.create_openai_response(
-        input=input_text,
-        model=model,
-        stream=False,
-        tools=[
-            OpenAIResponseInputToolFunction(
-                type="function",
-                name="get_weather",
-                description="Get weather information",
-                parameters={"type": "object", "properties": {"location": {"type": "string"}}, "required": ["location"]},
-                strict=False,  # Explicitly set to False
-            )
-        ],
+        CreateResponseRequest(
+            input=input_text,
+            model=model,
+            stream=False,
+            tools=[
+                OpenAIResponseInputToolFunction(
+                    type="function",
+                    name="get_weather",
+                    description="Get weather information",
+                    parameters={
+                        "type": "object",
+                        "properties": {"location": {"type": "string"}},
+                        "required": ["location"],
+                    },
+                    strict=False,  # Explicitly set to False
+                )
+            ],
+        )
     )
 
     # Verify the call was made

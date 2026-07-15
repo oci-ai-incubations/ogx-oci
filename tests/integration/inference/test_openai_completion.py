@@ -8,6 +8,7 @@
 import time
 
 import pytest
+from openai import OpenAI
 from pydantic import BaseModel
 
 from ..helpers import assert_text_contains
@@ -247,6 +248,7 @@ def test_openai_chat_completion_non_streaming(compat_client, client_with_models,
     question = tc["question"]
     expected = tc["expected"]
 
+    request_options = {"timeout": 120} if isinstance(compat_client, OpenAI) else {}
     response = compat_client.chat.completions.create(
         model=text_model_id,
         messages=[
@@ -256,6 +258,7 @@ def test_openai_chat_completion_non_streaming(compat_client, client_with_models,
             }
         ],
         stream=False,
+        **request_options,
     )
     message_content = response.choices[0].message.content
     assert len(message_content) > 0
@@ -540,9 +543,12 @@ def test_openai_chat_completion_non_streaming_with_file(openai_client, client_wi
     assert_text_contains(response.choices[0].message.content, "hello world")
 
 
+_REASONING_MODEL_PATTERNS = ("gpt-oss", "deepseek-r1")
+
+
 def skip_if_model_doesnt_support_reasoning(model_id):
     """Skip if the model is not known to emit reasoning/thinking tokens."""
-    if "gpt-oss" not in model_id.lower():
+    if not any(p in model_id.lower() for p in _REASONING_MODEL_PATTERNS):
         pytest.skip(f"Model {model_id} doesn't emit reasoning tokens; skipping reasoning passthrough test.")
 
 
@@ -566,7 +572,7 @@ def test_openai_chat_completion_reasoning_passthrough(openai_client, client_with
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "What is 2+2? Think step by step."},
     ]
-    resp1 = openai_client.chat.completions.create(model=text_model_id, messages=messages)
+    resp1 = openai_client.chat.completions.create(model=text_model_id, messages=messages, timeout=120)
     msg1 = resp1.choices[0].message
 
     # Reasoning content arrives as a non-spec field; it lives in model_extra
@@ -582,7 +588,7 @@ def test_openai_chat_completion_reasoning_passthrough(openai_client, client_with
     messages.append(msg1.model_dump())
     messages.append({"role": "user", "content": "Now multiply that result by 3."})
 
-    resp2 = openai_client.chat.completions.create(model=text_model_id, messages=messages)
+    resp2 = openai_client.chat.completions.create(model=text_model_id, messages=messages, timeout=120)
     msg2 = resp2.choices[0].message
 
     assert msg2.content, "Expected a non-empty response in turn 2"

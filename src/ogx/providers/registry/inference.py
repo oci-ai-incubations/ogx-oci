@@ -51,19 +51,6 @@ def available_providers() -> list[ProviderSpec]:
             config_class="ogx.providers.inline.inference.sentence_transformers.config.SentenceTransformersInferenceConfig",
             description="Sentence Transformers inference provider for text embeddings and similarity search.",
         ),
-        InlineProviderSpec(
-            api=Api.inference,
-            provider_type="inline::transformers",
-            pip_packages=[
-                "torch --extra-index-url https://download.pytorch.org/whl/cpu",
-                "transformers",
-                "tokenizers",
-                "safetensors",
-            ],
-            module="ogx.providers.inline.inference.transformers",
-            config_class="ogx.providers.inline.inference.transformers.config.TransformersInferenceConfig",
-            description="Transformers inference provider for neural rerank.",
-        ),
         RemoteProviderSpec(
             api=Api.inference,
             adapter_type="cerebras",
@@ -125,7 +112,10 @@ def available_providers() -> list[ProviderSpec]:
             module="ogx.providers.remote.inference.bedrock",
             config_class="ogx.providers.remote.inference.bedrock.BedrockConfig",
             provider_data_validator="ogx.providers.remote.inference.bedrock.config.BedrockProviderDataValidator",
-            description="AWS Bedrock inference provider using OpenAI compatible endpoint.",
+            description=(
+                "AWS Bedrock inference provider for the OpenAI-compatible runtime, "
+                "with AWS credential-chain auth by default and an optional bearer-token override."
+            ),
         ),
         RemoteProviderSpec(
             api=Api.inference,
@@ -192,7 +182,7 @@ def available_providers() -> list[ProviderSpec]:
             adapter_type="vertexai",
             provider_type="remote::vertexai",
             pip_packages=[
-                "google-genai>=1.69.0",
+                "google-genai>=1.69.0,<2",
             ],
             module="ogx.providers.remote.inference.vertexai",
             config_class="ogx.providers.remote.inference.vertexai.VertexAIConfig",
@@ -236,6 +226,16 @@ Short names like vertexai/gemini-2.5-flash also work in API requests.""",
             config_class="ogx.providers.remote.inference.llama_openai_compat.config.LlamaCompatConfig",
             provider_data_validator="ogx.providers.remote.inference.llama_openai_compat.config.LlamaProviderDataValidator",
             description="Llama OpenAI-compatible provider for using Llama models with OpenAI API format.",
+        ),
+        RemoteProviderSpec(
+            api=Api.inference,
+            adapter_type="meta",
+            provider_type="remote::meta",
+            pip_packages=[],
+            module="ogx.providers.remote.inference.meta",
+            config_class="ogx.providers.remote.inference.meta.MetaConfig",
+            provider_data_validator="ogx.providers.remote.inference.meta.config.MetaProviderDataValidator",
+            description="Meta AI inference provider for the OpenAI-compatible api.meta.ai endpoint, with native Chat Completions, Responses, and Messages API support.",
         ),
         RemoteProviderSpec(
             api=Api.inference,
